@@ -155,20 +155,18 @@ install_dependencies() {
         python3-venv \
         python3-dev \
         python3-numpy \
+        python3-opencv \
         build-essential \
         cmake \
         git \
         curl \
         wget
     
-    # Try to install python3-opencv (may not be available on all distros)
-    apt-get install -y python3-opencv 2>/dev/null || print_warning "python3-opencv not available, will install via pip"
-    
     # Camera libraries (libcamera for Raspberry Pi Camera)
-    # These may have different names on Ubuntu vs Raspberry Pi OS
-    apt-get install -y libcap-dev
-    apt-get install -y libcamera-dev 2>/dev/null || print_warning "libcamera-dev not available"
-    apt-get install -y libcamera-apps 2>/dev/null || true
+    apt-get install -y \
+        libcap-dev \
+        libcamera-dev \
+        libcamera-apps
     
     # Image processing libraries
     apt-get install -y \
@@ -178,12 +176,12 @@ install_dependencies() {
         libwebp-dev
     
     # Math/ML libraries
-    # Note: libatlas-base-dev has been removed from Debian trixie and newer Ubuntu
+    # Note: libatlas-base-dev removed from Debian trixie
     # See: https://github.com/numpy/numpy/issues/29108
-    # Using libopenblas-dev as the recommended alternative
-    apt-get install -y libopenblas-dev || true
-    apt-get install -y libhdf5-dev || true
-    apt-get install -y liblapack-dev || true
+    apt-get install -y \
+        libopenblas-dev \
+        libhdf5-dev \
+        liblapack-dev
     
     # Video encoding
     apt-get install -y \
@@ -197,45 +195,17 @@ install_dependencies() {
 install_picamera2_deps() {
     print_step "Installing Raspberry Pi Camera dependencies..."
     
-    # Detect if we're on Ubuntu or Raspberry Pi OS
-    if grep -qi "ubuntu" /etc/os-release 2>/dev/null; then
-        print_info "Detected Ubuntu - installing camera packages..."
-        
-        # On Ubuntu, packages may have different names or need PPA
-        apt-get install -y python3-libcamera 2>/dev/null || true
-        apt-get install -y python3-kms++ 2>/dev/null || true
-        apt-get install -y python3-prctl 2>/dev/null || true
-        apt-get install -y python3-pil 2>/dev/null || true
-        
-        # Try to install picamera2 - may need to be installed via pip on Ubuntu
-        if ! apt-get install -y python3-picamera2 2>/dev/null; then
-            print_warning "python3-picamera2 not available via apt, will try pip later"
-        fi
-        
-        # Camera tools
-        apt-get install -y libcamera-tools 2>/dev/null || true
-        apt-get install -y libcamera-apps 2>/dev/null || true
-        
-    else
-        print_info "Detected Raspberry Pi OS - installing camera packages..."
-        
-        # Core picamera2 and libcamera packages (Raspberry Pi OS)
-        apt-get install -y \
-            python3-picamera2 \
-            python3-libcamera \
-            python3-kms++ \
-            python3-prctl \
-            python3-pil \
-            2>/dev/null || print_warning "Some camera packages not available"
-        
-        # Additional libcamera tools
-        apt-get install -y rpicam-apps 2>/dev/null || \
-            apt-get install -y libcamera-apps 2>/dev/null || \
-            apt-get install -y libcamera-tools 2>/dev/null || true
-    fi
+    # Core picamera2 and libcamera packages for Raspberry Pi / Debian
+    apt-get install -y \
+        python3-picamera2 \
+        python3-libcamera \
+        python3-kms++ \
+        python3-prctl \
+        python3-pil
     
-    # PyQt5 for picamera2 preview (optional)
-    apt-get install -y python3-pyqt5 2>/dev/null || true
+    # Camera tools (rpicam-apps for newer Pi OS, libcamera-apps for older/Debian)
+    apt-get install -y rpicam-apps 2>/dev/null || \
+        apt-get install -y libcamera-apps 2>/dev/null || true
     
     # Enable camera interface via raspi-config if available
     if command -v raspi-config &> /dev/null; then
@@ -247,21 +217,12 @@ install_picamera2_deps() {
     # Add service user to video group for camera access
     usermod -aG video "$SERVICE_USER" 2>/dev/null || true
     
-    # Also add current user if exists (ubuntu, pi, etc.)
-    for user in pi ubuntu; do
-        if id "$user" &>/dev/null; then
-            usermod -aG video "$user" 2>/dev/null || true
-        fi
-    done
-    
     # Test if camera is detected
     print_info "Testing camera detection..."
     if command -v rpicam-hello &> /dev/null; then
         rpicam-hello --list-cameras 2>/dev/null || print_warning "No cameras detected yet (may need reboot)"
     elif command -v libcamera-hello &> /dev/null; then
         libcamera-hello --list-cameras 2>/dev/null || print_warning "No cameras detected yet (may need reboot)"
-    else
-        print_warning "Camera tools not installed - camera detection skipped"
     fi
     
     print_success "Camera dependencies installed"
@@ -523,120 +484,226 @@ EOF
     print_success "Systemd service created (runs as user: ${SERVICE_USER})"
 }
 
-# Create convenience scripts
+# Create pirdfy command with subcommands
 create_scripts() {
-    print_step "Creating convenience scripts..."
+    print_step "Creating pirdfy command..."
     
-    # Start script
-    cat > /usr/local/bin/pirdfy-start << 'EOF'
+    # Create single pirdfy command with subcommands
+    cat > /usr/local/bin/pirdfy << 'EOF'
 #!/bin/bash
-sudo systemctl start pirdfy
-echo "Pirdfy started. Dashboard available at http://$(hostname -I | awk '{print $1}'):8080"
-EOF
-    chmod +x /usr/local/bin/pirdfy-start
-    
-    # Stop script
-    cat > /usr/local/bin/pirdfy-stop << 'EOF'
-#!/bin/bash
-sudo systemctl stop pirdfy
-echo "Pirdfy stopped."
-EOF
-    chmod +x /usr/local/bin/pirdfy-stop
-    
-    # Status script
-    cat > /usr/local/bin/pirdfy-status << 'EOF'
-#!/bin/bash
-sudo systemctl status pirdfy
-EOF
-    chmod +x /usr/local/bin/pirdfy-status
-    
-    # Logs script
-    cat > /usr/local/bin/pirdfy-logs << 'EOF'
-#!/bin/bash
-sudo journalctl -u pirdfy -f
-EOF
-    chmod +x /usr/local/bin/pirdfy-logs
-    
-    # Update script
-    cat > /usr/local/bin/pirdfy-update << 'EOF'
-#!/bin/bash
-cd /opt/pirdfy
-sudo systemctl stop pirdfy
-git pull
-source venv/bin/activate
-pip install -r requirements.txt
-sudo systemctl start pirdfy
-echo "Pirdfy updated and restarted."
-EOF
-    chmod +x /usr/local/bin/pirdfy-update
-    
-    # Fix permissions script
-    cat > /usr/local/bin/pirdfy-fix-permissions << 'EOF'
-#!/bin/bash
-# Fix permissions for Pirdfy data and log directories
+#
+# Pirdfy - Bird Feeder Camera Detector
+# Usage: pirdfy <command>
+#
+
 INSTALL_DIR="/opt/pirdfy"
+SERVICE_NAME="pirdfy"
 SERVICE_USER="pirdfy"
 SERVICE_GROUP="pirdfy"
 
-echo "Fixing permissions for Pirdfy..."
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-# Ensure user exists
-if ! id "$SERVICE_USER" &>/dev/null; then
-    echo "Error: User $SERVICE_USER does not exist"
-    exit 1
-fi
-
-# Fix ownership
-sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/data"
-sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/logs"
-sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/models"
-
-# Fix directory permissions
-sudo chmod 755 "$INSTALL_DIR"
-sudo chmod 755 "$INSTALL_DIR/data"
-sudo chmod -R 755 "$INSTALL_DIR/data/photos"
-sudo chmod -R 755 "$INSTALL_DIR/data/birds"
-sudo chmod -R 755 "$INSTALL_DIR/data/videos"
-sudo chmod -R 755 "$INSTALL_DIR/data/annotated"
-sudo chmod 755 "$INSTALL_DIR/logs"
-sudo chmod 644 "$INSTALL_DIR/logs/"*.log 2>/dev/null
-
-# Ensure pirdfy user is in video group
-sudo usermod -aG video "$SERVICE_USER"
-
-echo "✓ Permissions fixed for user $SERVICE_USER"
-EOF
-    chmod +x /usr/local/bin/pirdfy-fix-permissions
-    
-    # Test camera script
-    cat > /usr/local/bin/pirdfy-test-camera << 'EOF'
-#!/bin/bash
-echo "Testing Raspberry Pi camera..."
-if command -v rpicam-hello &> /dev/null; then
-    rpicam-hello --list-cameras
+show_help() {
+    echo -e "${BLUE}🐦 Pirdfy - Bird Feeder Camera Detector${NC}"
     echo ""
-    echo "Taking test photo..."
-    rpicam-jpeg -o /tmp/pirdfy-test.jpg -t 1000
-    if [[ -f /tmp/pirdfy-test.jpg ]]; then
-        echo "✓ Test photo saved to /tmp/pirdfy-test.jpg"
-        rm /tmp/pirdfy-test.jpg
-    fi
-elif command -v libcamera-hello &> /dev/null; then
-    libcamera-hello --list-cameras
+    echo "Usage: pirdfy <command>"
     echo ""
-    echo "Taking test photo..."
-    libcamera-jpeg -o /tmp/pirdfy-test.jpg -t 1000
-    if [[ -f /tmp/pirdfy-test.jpg ]]; then
-        echo "✓ Test photo saved to /tmp/pirdfy-test.jpg"
-        rm /tmp/pirdfy-test.jpg
+    echo "Commands:"
+    echo "  start       Start the pirdfy service"
+    echo "  stop        Stop the pirdfy service"
+    echo "  restart     Restart the pirdfy service"
+    echo "  status      Show service status"
+    echo "  logs        Follow live logs (Ctrl+C to exit)"
+    echo "  update      Update pirdfy to latest version"
+    echo "  camera      Test camera connectivity"
+    echo "  fix         Fix file permissions"
+    echo "  config      Edit configuration file"
+    echo "  url         Show dashboard URL"
+    echo "  help        Show this help message"
+    echo ""
+}
+
+cmd_start() {
+    echo -e "${GREEN}▶${NC} Starting Pirdfy..."
+    sudo systemctl start "$SERVICE_NAME"
+    sleep 1
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        IP_ADDR=$(hostname -I | awk '{print $1}')
+        echo -e "${GREEN}✓${NC} Pirdfy started"
+        echo -e "${BLUE}📊 Dashboard:${NC} http://${IP_ADDR}:8080"
+    else
+        echo -e "${RED}✖${NC} Failed to start Pirdfy"
+        echo "Check logs with: pirdfy logs"
     fi
-else
-    echo "Camera tools not found. Install with: sudo apt install rpicam-apps"
-fi
-EOF
-    chmod +x /usr/local/bin/pirdfy-test-camera
+}
+
+cmd_stop() {
+    echo -e "${YELLOW}■${NC} Stopping Pirdfy..."
+    sudo systemctl stop "$SERVICE_NAME"
+    echo -e "${GREEN}✓${NC} Pirdfy stopped"
+}
+
+cmd_restart() {
+    echo -e "${YELLOW}↻${NC} Restarting Pirdfy..."
+    sudo systemctl restart "$SERVICE_NAME"
+    sleep 1
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        echo -e "${GREEN}✓${NC} Pirdfy restarted"
+    else
+        echo -e "${RED}✖${NC} Failed to restart Pirdfy"
+    fi
+}
+
+cmd_status() {
+    echo -e "${BLUE}📊 Pirdfy Status${NC}"
+    echo ""
+    systemctl status "$SERVICE_NAME" --no-pager
+}
+
+cmd_logs() {
+    echo -e "${BLUE}📋 Pirdfy Logs${NC} (Ctrl+C to exit)"
+    echo ""
+    sudo journalctl -u "$SERVICE_NAME" -f
+}
+
+cmd_update() {
+    echo -e "${BLUE}📥 Updating Pirdfy...${NC}"
     
-    print_success "Convenience scripts created"
+    cd "$INSTALL_DIR" || exit 1
+    
+    # Stop service
+    sudo systemctl stop "$SERVICE_NAME"
+    
+    # Pull latest code
+    echo "Pulling latest changes..."
+    git pull
+    
+    # Update Python packages
+    echo "Updating Python packages..."
+    source venv/bin/activate
+    pip install -r requirements.txt
+    
+    # Fix ownership
+    sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR"
+    
+    # Restart service
+    sudo systemctl start "$SERVICE_NAME"
+    
+    echo -e "${GREEN}✓${NC} Pirdfy updated and restarted"
+}
+
+cmd_camera() {
+    echo -e "${BLUE}📷 Testing Raspberry Pi Camera${NC}"
+    echo ""
+    
+    if command -v rpicam-hello &> /dev/null; then
+        echo "Detected cameras:"
+        rpicam-hello --list-cameras
+        echo ""
+        echo "Taking test photo..."
+        rpicam-jpeg -o /tmp/pirdfy-test.jpg -t 1000 2>/dev/null
+        if [[ -f /tmp/pirdfy-test.jpg ]]; then
+            echo -e "${GREEN}✓${NC} Test photo saved to /tmp/pirdfy-test.jpg"
+            ls -lh /tmp/pirdfy-test.jpg
+            rm /tmp/pirdfy-test.jpg
+        else
+            echo -e "${RED}✖${NC} Failed to capture test photo"
+        fi
+    elif command -v libcamera-hello &> /dev/null; then
+        echo "Detected cameras:"
+        libcamera-hello --list-cameras
+        echo ""
+        echo "Taking test photo..."
+        libcamera-jpeg -o /tmp/pirdfy-test.jpg -t 1000 2>/dev/null
+        if [[ -f /tmp/pirdfy-test.jpg ]]; then
+            echo -e "${GREEN}✓${NC} Test photo saved to /tmp/pirdfy-test.jpg"
+            rm /tmp/pirdfy-test.jpg
+        fi
+    else
+        echo -e "${RED}✖${NC} Camera tools not found"
+        echo "Install with: sudo apt install rpicam-apps"
+    fi
+}
+
+cmd_fix() {
+    echo -e "${BLUE}🔧 Fixing Pirdfy permissions${NC}"
+    
+    # Ensure user exists
+    if ! id "$SERVICE_USER" &>/dev/null; then
+        echo -e "${RED}✖${NC} User $SERVICE_USER does not exist"
+        exit 1
+    fi
+    
+    # Fix ownership
+    sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/data"
+    sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/logs"
+    sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/models"
+    
+    # Fix permissions
+    sudo chmod 755 "$INSTALL_DIR"
+    sudo chmod -R 755 "$INSTALL_DIR/data"
+    sudo chmod 755 "$INSTALL_DIR/logs"
+    sudo chmod 644 "$INSTALL_DIR/logs/"*.log 2>/dev/null
+    
+    # Ensure user in video group
+    sudo usermod -aG video "$SERVICE_USER"
+    
+    echo -e "${GREEN}✓${NC} Permissions fixed for user $SERVICE_USER"
+}
+
+cmd_config() {
+    if command -v nano &> /dev/null; then
+        sudo nano "$INSTALL_DIR/config/config.yaml"
+    elif command -v vim &> /dev/null; then
+        sudo vim "$INSTALL_DIR/config/config.yaml"
+    else
+        echo "Config file: $INSTALL_DIR/config/config.yaml"
+        cat "$INSTALL_DIR/config/config.yaml"
+    fi
+}
+
+cmd_url() {
+    IP_ADDR=$(hostname -I | awk '{print $1}')
+    echo -e "${BLUE}📊 Pirdfy Dashboard${NC}"
+    echo ""
+    echo "  http://${IP_ADDR}:8080"
+    echo ""
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        echo -e "  Status: ${GREEN}Running${NC}"
+    else
+        echo -e "  Status: ${RED}Stopped${NC}"
+    fi
+}
+
+# Main command handler
+case "${1:-help}" in
+    start)      cmd_start ;;
+    stop)       cmd_stop ;;
+    restart)    cmd_restart ;;
+    status)     cmd_status ;;
+    logs)       cmd_logs ;;
+    update)     cmd_update ;;
+    camera)     cmd_camera ;;
+    fix)        cmd_fix ;;
+    config)     cmd_config ;;
+    url)        cmd_url ;;
+    help|--help|-h)  show_help ;;
+    *)
+        echo -e "${RED}Unknown command:${NC} $1"
+        echo ""
+        show_help
+        exit 1
+        ;;
+esac
+EOF
+    chmod +x /usr/local/bin/pirdfy
+    
+    print_success "Created 'pirdfy' command"
 }
 
 # Configure hostname (optional)
@@ -753,19 +820,16 @@ print_instructions() {
     echo -e "${BLUE}📊 Dashboard URL:${NC} http://${IP_ADDR}:8080"
     echo -e "${BLUE}📄 Configuration:${NC} $INSTALL_DIR/config/config.yaml\n"
     
-    echo -e "${YELLOW}Quick Commands:${NC}"
-    echo -e "  pirdfy-start           - Start the service"
-    echo -e "  pirdfy-stop            - Stop the service"
-    echo -e "  pirdfy-status          - Check service status"
-    echo -e "  pirdfy-logs            - View live logs"
-    echo -e "  pirdfy-update          - Update to latest version"
-    echo -e "  pirdfy-test-camera     - Test camera connectivity"
-    echo -e "  pirdfy-fix-permissions - Fix file permissions\n"
-    
-    echo -e "${YELLOW}Manual Control:${NC}"
-    echo -e "  sudo systemctl start pirdfy"
-    echo -e "  sudo systemctl stop pirdfy"
-    echo -e "  sudo systemctl restart pirdfy\n"
+    echo -e "${YELLOW}Commands:${NC}"
+    echo -e "  pirdfy start     - Start the service"
+    echo -e "  pirdfy stop      - Stop the service"
+    echo -e "  pirdfy restart   - Restart the service"
+    echo -e "  pirdfy status    - Check service status"
+    echo -e "  pirdfy logs      - View live logs"
+    echo -e "  pirdfy camera    - Test camera"
+    echo -e "  pirdfy config    - Edit configuration"
+    echo -e "  pirdfy update    - Update to latest version"
+    echo -e "  pirdfy help      - Show all commands\n"
     
     read -p "Start Pirdfy now? (Y/n): " -n 1 -r
     echo

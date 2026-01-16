@@ -17,7 +17,7 @@ A Raspberry Pi 5-based bird feeder camera system that captures, detects, and cat
 
 - Raspberry Pi 5 (4GB+ RAM recommended)
 - **Raspberry Pi Camera Module v2/v3** (uses picamera2/libcamera)
-- Raspberry Pi OS (Bookworm or newer recommended)
+- Debian Trixie / Raspberry Pi OS Bookworm or newer
 - Python 3.11+
 - 32GB+ SD card recommended
 
@@ -59,25 +59,20 @@ sudo ./install.sh
 
 ## Usage
 
-### Quick Commands
+### Commands
 
 ```bash
-pirdfy-start           # Start the service
-pirdfy-stop            # Stop the service
-pirdfy-status          # Check service status
-pirdfy-logs            # View live logs
-pirdfy-update          # Update to latest version
-pirdfy-test-camera     # Test camera connectivity
-pirdfy-fix-permissions # Fix file permissions
-```
-
-### Manual Control
-
-```bash
-sudo systemctl start pirdfy
-sudo systemctl stop pirdfy
-sudo systemctl restart pirdfy
-sudo systemctl status pirdfy
+pirdfy start     # Start the service
+pirdfy stop      # Stop the service
+pirdfy restart   # Restart the service
+pirdfy status    # Check service status
+pirdfy logs      # View live logs (Ctrl+C to exit)
+pirdfy camera    # Test camera connectivity
+pirdfy config    # Edit configuration
+pirdfy update    # Update to latest version
+pirdfy fix       # Fix file permissions
+pirdfy url       # Show dashboard URL
+pirdfy help      # Show all commands
 ```
 
 ### Access Dashboard
@@ -124,18 +119,17 @@ web:
 
 ```bash
 # Test camera
-pirdfy-test-camera
+pirdfy camera
 
 # Or manually:
 rpicam-hello --list-cameras
-libcamera-hello --list-cameras
 ```
 
 ### Permission issues
 
 ```bash
 # Fix permissions
-pirdfy-fix-permissions
+pirdfy fix
 
 # Check pirdfy user is in video group
 groups pirdfy
@@ -145,13 +139,10 @@ groups pirdfy
 
 ```bash
 # Check logs
-pirdfy-logs
-
-# Or:
-sudo journalctl -u pirdfy -f
+pirdfy logs
 
 # Check service status
-sudo systemctl status pirdfy
+pirdfy status
 ```
 
 ### After reboot camera not working
