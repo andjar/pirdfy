@@ -74,24 +74,32 @@ create_service_user() {
         print_info "Group $SERVICE_GROUP already exists"
     fi
     
+    # Build list of groups that exist on this system
+    EXTRA_GROUPS="video"
+    for grp in gpio i2c spi render; do
+        if getent group "$grp" > /dev/null 2>&1; then
+            EXTRA_GROUPS="$EXTRA_GROUPS,$grp"
+        fi
+    done
+    
     # Create pirdfy user if it doesn't exist
     if ! id "$SERVICE_USER" > /dev/null 2>&1; then
         useradd --system \
             --gid "$SERVICE_GROUP" \
-            --groups video,gpio,i2c,spi \
+            --groups "$EXTRA_GROUPS" \
             --home-dir "$INSTALL_DIR" \
             --no-create-home \
             --shell /usr/sbin/nologin \
             "$SERVICE_USER"
-        print_info "Created user: $SERVICE_USER"
+        print_info "Created user: $SERVICE_USER (groups: $EXTRA_GROUPS)"
     else
         print_info "User $SERVICE_USER already exists"
         # Ensure user is in required groups
-        usermod -aG video,gpio "$SERVICE_USER" 2>/dev/null || true
+        usermod -aG "$EXTRA_GROUPS" "$SERVICE_USER" 2>/dev/null || true
     fi
     
-    # Add user to video group for camera access
-    usermod -aG video "$SERVICE_USER"
+    # Add user to video group for camera access (ensure it's there)
+    usermod -aG video "$SERVICE_USER" 2>/dev/null || true
     
     print_success "Service user configured"
 }
@@ -147,18 +155,20 @@ install_dependencies() {
         python3-venv \
         python3-dev \
         python3-numpy \
-        python3-opencv \
         build-essential \
         cmake \
         git \
         curl \
         wget
     
+    # Try to install python3-opencv (may not be available on all distros)
+    apt-get install -y python3-opencv 2>/dev/null || print_warning "python3-opencv not available, will install via pip"
+    
     # Camera libraries (libcamera for Raspberry Pi Camera)
-    apt-get install -y \
-        libcamera-dev \
-        libcamera-apps \
-        libcap-dev
+    # These may have different names on Ubuntu vs Raspberry Pi OS
+    apt-get install -y libcap-dev
+    apt-get install -y libcamera-dev 2>/dev/null || print_warning "libcamera-dev not available"
+    apt-get install -y libcamera-apps 2>/dev/null || true
     
     # Image processing libraries
     apt-get install -y \
@@ -167,12 +177,12 @@ install_dependencies() {
         libtiff-dev \
         libwebp-dev
     
-    # Math/ML libraries
-    apt-get install -y \
-        libatlas-base-dev \
-        libopenblas-dev \
-        libhdf5-dev \
-        liblapack-dev
+    # Math/ML libraries - handle Ubuntu vs Raspberry Pi OS differences
+    # libatlas-base-dev is not available on Ubuntu, use alternatives
+    apt-get install -y libopenblas-dev || true
+    apt-get install -y libatlas-base-dev 2>/dev/null || print_info "libatlas-base-dev not available, using libopenblas instead"
+    apt-get install -y libhdf5-dev || true
+    apt-get install -y liblapack-dev || true
     
     # Video encoding
     apt-get install -y \
@@ -186,33 +196,62 @@ install_dependencies() {
 install_picamera2_deps() {
     print_step "Installing Raspberry Pi Camera dependencies..."
     
-    # Core picamera2 and libcamera packages
-    apt-get install -y \
-        python3-picamera2 \
-        python3-libcamera \
-        python3-kms++ \
-        python3-prctl \
-        python3-pyqt5 \
-        python3-pil
+    # Detect if we're on Ubuntu or Raspberry Pi OS
+    if grep -qi "ubuntu" /etc/os-release 2>/dev/null; then
+        print_info "Detected Ubuntu - installing camera packages..."
+        
+        # On Ubuntu, packages may have different names or need PPA
+        apt-get install -y python3-libcamera 2>/dev/null || true
+        apt-get install -y python3-kms++ 2>/dev/null || true
+        apt-get install -y python3-prctl 2>/dev/null || true
+        apt-get install -y python3-pil 2>/dev/null || true
+        
+        # Try to install picamera2 - may need to be installed via pip on Ubuntu
+        if ! apt-get install -y python3-picamera2 2>/dev/null; then
+            print_warning "python3-picamera2 not available via apt, will try pip later"
+        fi
+        
+        # Camera tools
+        apt-get install -y libcamera-tools 2>/dev/null || true
+        apt-get install -y libcamera-apps 2>/dev/null || true
+        
+    else
+        print_info "Detected Raspberry Pi OS - installing camera packages..."
+        
+        # Core picamera2 and libcamera packages (Raspberry Pi OS)
+        apt-get install -y \
+            python3-picamera2 \
+            python3-libcamera \
+            python3-kms++ \
+            python3-prctl \
+            python3-pil \
+            2>/dev/null || print_warning "Some camera packages not available"
+        
+        # Additional libcamera tools
+        apt-get install -y rpicam-apps 2>/dev/null || \
+            apt-get install -y libcamera-apps 2>/dev/null || \
+            apt-get install -y libcamera-tools 2>/dev/null || true
+    fi
     
-    # Additional libcamera tools and dependencies
-    apt-get install -y \
-        libcamera-tools \
-        rpicam-apps || apt-get install -y libcamera-apps
+    # PyQt5 for picamera2 preview (optional)
+    apt-get install -y python3-pyqt5 2>/dev/null || true
     
-    # Enable legacy camera support (may be needed for some setups)
+    # Enable camera interface via raspi-config if available
     if command -v raspi-config &> /dev/null; then
         print_info "Configuring camera interface..."
-        # Enable camera interface
         raspi-config nonint do_camera 0 2>/dev/null || true
-        # Disable legacy camera (use libcamera instead)
         raspi-config nonint do_legacy 1 2>/dev/null || true
     fi
     
-    # Add user to video group for camera access
-    if id "pi" &>/dev/null; then
-        usermod -aG video pi
-    fi
+    # Add service user to video group for camera access
+    usermod -aG video "$SERVICE_USER" 2>/dev/null || true
+    
+    # Also add current user if exists (ubuntu, pi, etc.)
+    for user in pi ubuntu; do
+        if id "$user" &>/dev/null; then
+            usermod -aG video "$user" 2>/dev/null || true
+        fi
+    done
     
     # Test if camera is detected
     print_info "Testing camera detection..."
@@ -220,6 +259,8 @@ install_picamera2_deps() {
         rpicam-hello --list-cameras 2>/dev/null || print_warning "No cameras detected yet (may need reboot)"
     elif command -v libcamera-hello &> /dev/null; then
         libcamera-hello --list-cameras 2>/dev/null || print_warning "No cameras detected yet (may need reboot)"
+    else
+        print_warning "Camera tools not installed - camera detection skipped"
     fi
     
     print_success "Camera dependencies installed"
@@ -303,13 +344,22 @@ create_venv() {
     print_info "Installing Python packages (this may take several minutes on Raspberry Pi)..."
     pip install --no-cache-dir -r requirements.txt
     
-    # Verify picamera2 is available
+    # Verify picamera2 is available, try to install via pip if not
     print_info "Verifying picamera2 installation..."
     if python3 -c "import picamera2; print(f'picamera2 version: {picamera2.__version__}')" 2>/dev/null; then
         print_success "picamera2 is available"
     else
-        print_warning "picamera2 not found - camera features may not work"
-        print_info "Try: sudo apt install python3-picamera2"
+        print_warning "picamera2 not found via system packages, trying pip install..."
+        pip install picamera2 2>/dev/null || print_warning "Could not install picamera2 via pip"
+        
+        # Check again
+        if python3 -c "import picamera2" 2>/dev/null; then
+            print_success "picamera2 installed via pip"
+        else
+            print_warning "picamera2 not available - camera features may not work"
+            print_info "On Raspberry Pi OS: sudo apt install python3-picamera2"
+            print_info "The system will use mock camera for testing"
+        fi
     fi
     
     # Verify other key packages
@@ -400,6 +450,14 @@ create_directories() {
 create_service() {
     print_step "Creating systemd service..."
     
+    # Build list of supplementary groups that exist
+    SUPP_GROUPS="video"
+    for grp in gpio i2c spi render; do
+        if getent group "$grp" > /dev/null 2>&1; then
+            SUPP_GROUPS="$SUPP_GROUPS $grp"
+        fi
+    done
+    
     cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
 [Unit]
 Description=Pirdfy Bird Feeder Camera Detector
@@ -417,7 +475,6 @@ WorkingDirectory=${INSTALL_DIR}
 Environment=PATH=${INSTALL_DIR}/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PYTHONUNBUFFERED=1
 Environment=HOME=${INSTALL_DIR}
-Environment=XDG_RUNTIME_DIR=/run/user/\$(id -u ${SERVICE_USER})
 
 # Start command
 ExecStart=${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/src/main.py --config ${INSTALL_DIR}/config/config.yaml
@@ -429,7 +486,7 @@ TimeoutStartSec=60
 TimeoutStopSec=30
 
 # Allow camera and hardware access via supplementary groups
-SupplementaryGroups=video gpio i2c spi
+SupplementaryGroups=${SUPP_GROUPS}
 
 # Device access for Raspberry Pi camera
 DeviceAllow=/dev/video* rw
@@ -437,11 +494,11 @@ DeviceAllow=/dev/vchiq rw
 DeviceAllow=/dev/dma_heap/* rw
 DeviceAllow=/dev/media* rw
 
-# Security hardening
+# Security hardening (relaxed for camera access)
 PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-NoNewPrivileges=true
+ProtectSystem=false
+ProtectHome=read-only
+NoNewPrivileges=false
 ReadWritePaths=${INSTALL_DIR}/data ${INSTALL_DIR}/logs ${INSTALL_DIR}/models
 
 # Logging - redirect to files
