@@ -12,6 +12,26 @@ from contextlib import contextmanager
 import threading
 
 
+def convert_to_serializable(obj):
+    """Convert numpy/sqlite types to JSON-serializable Python types."""
+    if obj is None:
+        return None
+    if isinstance(obj, bytes):
+        return obj.decode('utf-8', errors='replace')
+    if isinstance(obj, (int, float, str, bool)):
+        return obj
+    if hasattr(obj, 'item'):  # numpy scalar
+        return obj.item()
+    if hasattr(obj, 'isoformat'):  # datetime objects
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {str(k): convert_to_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [convert_to_serializable(v) for v in obj]
+    # For anything else, convert to string
+    return str(obj)
+
+
 class Database:
     """Thread-safe SQLite database handler for Pirdfy."""
     
@@ -164,7 +184,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM photos WHERE id = ?", (photo_id,))
             row = cursor.fetchone()
-            return dict(row) if row else None
+            return convert_to_serializable(dict(row)) if row else None
     
     def get_recent_photos(self, limit: int = 100, with_birds_only: bool = False,
                           camera_id: Optional[int] = None) -> List[Dict]:
@@ -181,7 +201,7 @@ class Database:
             query += " ORDER BY captured_at DESC LIMIT ?"
             params.append(limit)
             cursor.execute(query, params)
-            return [dict(row) for row in cursor.fetchall()]
+            return [convert_to_serializable(dict(row)) for row in cursor.fetchall()]
     
     # Detection methods
     def add_detection(self, photo_id: int, species: str = "unknown",
@@ -203,7 +223,7 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM detections WHERE photo_id = ?", (photo_id,))
-            return [dict(row) for row in cursor.fetchall()]
+            return [convert_to_serializable(dict(row)) for row in cursor.fetchall()]
     
     def get_recent_detections(self, limit: int = 50) -> List[Dict]:
         """Get recent bird detections with photo info."""
@@ -216,7 +236,7 @@ class Database:
                 ORDER BY d.detected_at DESC
                 LIMIT ?
             """, (limit,))
-            return [dict(row) for row in cursor.fetchall()]
+            return [convert_to_serializable(dict(row)) for row in cursor.fetchall()]
     
     # Video methods
     def add_video(self, filename: str, filepath: str, camera_id: int = 0,
@@ -239,7 +259,7 @@ class Database:
             cursor.execute("""
                 SELECT * FROM videos ORDER BY recorded_at DESC LIMIT ?
             """, (limit,))
-            return [dict(row) for row in cursor.fetchall()]
+            return [convert_to_serializable(dict(row)) for row in cursor.fetchall()]
     
     # Statistics methods
     def update_hourly_stats(self, date: str, hour: int, total_photos: int = 0,
@@ -271,7 +291,7 @@ class Database:
                 WHERE date >= ?
                 ORDER BY date, hour
             """, (start_date,))
-            return [dict(row) for row in cursor.fetchall()]
+            return [convert_to_serializable(dict(row)) for row in cursor.fetchall()]
     
     def get_species_stats(self, days: int = 30) -> List[Dict]:
         """Get species detection statistics."""
@@ -285,7 +305,7 @@ class Database:
                 GROUP BY species
                 ORDER BY count DESC
             """, (start_date,))
-            return [dict(row) for row in cursor.fetchall()]
+            return [convert_to_serializable(dict(row)) for row in cursor.fetchall()]
     
     def get_daily_summary(self, days: int = 7) -> List[Dict]:
         """Get daily summary statistics."""
@@ -302,7 +322,7 @@ class Database:
                 GROUP BY DATE(captured_at)
                 ORDER BY date DESC
             """, (f'-{days} days',))
-            return [dict(row) for row in cursor.fetchall()]
+            return [convert_to_serializable(dict(row)) for row in cursor.fetchall()]
     
     # System stats methods
     def add_system_stats(self, cpu_percent: float, memory_percent: float,
@@ -328,7 +348,7 @@ class Database:
                 SELECT * FROM system_stats ORDER BY timestamp DESC LIMIT 1
             """)
             row = cursor.fetchone()
-            return dict(row) if row else None
+            return convert_to_serializable(dict(row)) if row else None
     
     # Cleanup methods
     def cleanup_old_data(self, photo_days: int = 30, video_days: int = 7):

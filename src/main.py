@@ -219,9 +219,11 @@ class Pirdfy:
                         
                         if detection_result and detection_result.detections:
                             for det in detection_result.detections:
+                                # Convert numpy types to native Python for JSON
+                                bbox = tuple(int(x) for x in det.bbox)
                                 self.web_app.emit_bird_detected({
-                                    "confidence": det.confidence,
-                                    "bbox": det.bbox,
+                                    "confidence": float(det.confidence),
+                                    "bbox": bbox,
                                     "cropped_image": det.cropped_path
                                 })
             
