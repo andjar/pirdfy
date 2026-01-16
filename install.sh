@@ -156,6 +156,7 @@ install_dependencies() {
         python3-dev \
         python3-numpy \
         python3-opencv \
+        python3-pil \
         build-essential \
         cmake \
         git \
@@ -302,31 +303,35 @@ create_venv() {
     print_info "Upgrading pip and setuptools..."
     pip install --upgrade pip wheel setuptools
     
-    # Install requirements (picamera2 comes from system)
+    # Install requirements (picamera2, PIL, numpy, opencv come from system packages)
     print_info "Installing Python packages (this may take several minutes on Raspberry Pi)..."
-    pip install --no-cache-dir -r requirements.txt
     
-    # Verify picamera2 is available, try to install via pip if not
-    print_info "Verifying picamera2 installation..."
-    if python3 -c "import picamera2; print(f'picamera2 version: {picamera2.__version__}')" 2>/dev/null; then
-        print_success "picamera2 is available"
-    else
-        print_warning "picamera2 not found via system packages, trying pip install..."
-        pip install picamera2 2>/dev/null || print_warning "Could not install picamera2 via pip"
-        
-        # Check again
-        if python3 -c "import picamera2" 2>/dev/null; then
-            print_success "picamera2 installed via pip"
-        else
-            print_warning "picamera2 not available - camera features may not work"
-            print_info "On Raspberry Pi OS: sudo apt install python3-picamera2"
-            print_info "The system will use mock camera for testing"
-        fi
-    fi
+    # First try to use system packages where available
+    pip install --no-cache-dir -r requirements.txt || {
+        print_warning "Some packages failed, trying with --ignore-installed for system packages..."
+        pip install --no-cache-dir --ignore-installed -r requirements.txt
+    }
     
-    # Verify other key packages
-    python3 -c "import cv2; print(f'OpenCV version: {cv2.__version__}')" 2>/dev/null || print_warning "OpenCV not fully installed"
-    python3 -c "import flask; print(f'Flask version: {flask.__version__}')" 2>/dev/null || print_error "Flask not installed"
+    # Verify system packages are available
+    print_info "Verifying installations..."
+    
+    python3 -c "import picamera2; print(f'  picamera2: {picamera2.__version__}')" 2>/dev/null || \
+        print_warning "picamera2 not available (install: sudo apt install python3-picamera2)"
+    
+    python3 -c "import numpy; print(f'  numpy: {numpy.__version__}')" 2>/dev/null || \
+        print_warning "numpy not available"
+    
+    python3 -c "import PIL; print(f'  PIL: {PIL.__version__}')" 2>/dev/null || \
+        print_warning "PIL not available"
+    
+    python3 -c "import cv2; print(f'  OpenCV: {cv2.__version__}')" 2>/dev/null || \
+        print_warning "OpenCV not available"
+    
+    python3 -c "import flask; print(f'  Flask: {flask.__version__}')" 2>/dev/null || \
+        print_error "Flask not installed"
+    
+    python3 -c "import ultralytics; print(f'  ultralytics: {ultralytics.__version__}')" 2>/dev/null || \
+        print_error "ultralytics not installed"
     
     # Set ownership of venv to pirdfy user
     chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/venv"
