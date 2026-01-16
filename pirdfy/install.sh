@@ -23,7 +23,9 @@ NC='\033[0m' # No Color
 # Installation directory
 INSTALL_DIR="/opt/pirdfy"
 SERVICE_NAME="pirdfy"
-REPO_URL="https://github.com/yourusername/pirdfy.git"
+SERVICE_USER="pirdfy"
+SERVICE_GROUP="pirdfy"
+REPO_URL="https://github.com/andjar/pirdfy.git"
 
 # Print functions
 print_header() {
@@ -58,6 +60,40 @@ check_root() {
         print_error "This script must be run as root (use sudo)"
         exit 1
     fi
+}
+
+# Create dedicated service user
+create_service_user() {
+    print_step "Creating service user..."
+    
+    # Create pirdfy group if it doesn't exist
+    if ! getent group "$SERVICE_GROUP" > /dev/null 2>&1; then
+        groupadd --system "$SERVICE_GROUP"
+        print_info "Created group: $SERVICE_GROUP"
+    else
+        print_info "Group $SERVICE_GROUP already exists"
+    fi
+    
+    # Create pirdfy user if it doesn't exist
+    if ! id "$SERVICE_USER" > /dev/null 2>&1; then
+        useradd --system \
+            --gid "$SERVICE_GROUP" \
+            --groups video,gpio,i2c,spi \
+            --home-dir "$INSTALL_DIR" \
+            --no-create-home \
+            --shell /usr/sbin/nologin \
+            "$SERVICE_USER"
+        print_info "Created user: $SERVICE_USER"
+    else
+        print_info "User $SERVICE_USER already exists"
+        # Ensure user is in required groups
+        usermod -aG video,gpio "$SERVICE_USER" 2>/dev/null || true
+    fi
+    
+    # Add user to video group for camera access
+    usermod -aG video "$SERVICE_USER"
+    
+    print_success "Service user configured"
 }
 
 # Check system requirements
@@ -233,6 +269,9 @@ setup_installation() {
     # Ensure main.py is executable
     chmod +x "$INSTALL_DIR/src/main.py" 2>/dev/null || true
     
+    # Set initial ownership to pirdfy user
+    chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR" 2>/dev/null || true
+    
     print_success "Installation directory set up"
 }
 
@@ -277,7 +316,10 @@ create_venv() {
     python3 -c "import cv2; print(f'OpenCV version: {cv2.__version__}')" 2>/dev/null || print_warning "OpenCV not fully installed"
     python3 -c "import flask; print(f'Flask version: {flask.__version__}')" 2>/dev/null || print_error "Flask not installed"
     
-    print_success "Python environment created"
+    # Set ownership of venv to pirdfy user
+    chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/venv"
+    
+    print_success "Python environment created (owned by $SERVICE_USER)"
 }
 
 # Download YOLO model
@@ -287,8 +329,23 @@ download_model() {
     cd "$INSTALL_DIR"
     source venv/bin/activate
     
-    # Download YOLOv8n model
-    python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+    # Download YOLOv8n model (as pirdfy user so it's in the right location)
+    # The model will be downloaded to the current directory
+    print_info "Downloading YOLOv8n model (this may take a moment)..."
+    sudo -u "$SERVICE_USER" "$INSTALL_DIR/venv/bin/python" -c "
+import os
+os.chdir('$INSTALL_DIR')
+from ultralytics import YOLO
+model = YOLO('yolov8n.pt')
+print('Model downloaded successfully')
+" || {
+        # Fallback: download as root and fix permissions
+        print_warning "Downloading as root (fallback)..."
+        python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+        # Move model to models dir and fix ownership
+        mv -f yolov8n.pt "$INSTALL_DIR/models/" 2>/dev/null || true
+        chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/models"
+    }
     
     print_success "Detection model downloaded"
 }
@@ -306,41 +363,37 @@ create_directories() {
     mkdir -p "$INSTALL_DIR/models"
     mkdir -p "$INSTALL_DIR/config"
     
-    # Set ownership - use root for service, but allow video group access
-    chown -R root:video "$INSTALL_DIR"
+    # Set ownership to pirdfy user
+    chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR"
     
-    # Base directory permissions
+    # Base directory permissions - readable by all, writable by owner
     chmod 755 "$INSTALL_DIR"
     chmod -R 755 "$INSTALL_DIR/src"
     chmod -R 755 "$INSTALL_DIR/config"
     
-    # Data directories - writable by service
+    # Data directories - writable by pirdfy user
     chmod 755 "$INSTALL_DIR/data"
     chmod 755 "$INSTALL_DIR/data/photos"
     chmod 755 "$INSTALL_DIR/data/birds"
     chmod 755 "$INSTALL_DIR/data/videos"
     chmod 755 "$INSTALL_DIR/data/annotated"
     
-    # Logs directory - writable by service, readable by group
+    # Logs directory - writable by pirdfy user
     chmod 755 "$INSTALL_DIR/logs"
     
     # Models directory
     chmod 755 "$INSTALL_DIR/models"
     
-    # Ensure service can write to data and logs
-    chown -R root:video "$INSTALL_DIR/data"
-    chown -R root:video "$INSTALL_DIR/logs"
-    
-    # Create empty log file with correct permissions
+    # Create empty log files with correct permissions
     touch "$INSTALL_DIR/logs/pirdfy.log"
     chmod 644 "$INSTALL_DIR/logs/pirdfy.log"
-    chown root:video "$INSTALL_DIR/logs/pirdfy.log"
+    chown "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/logs/pirdfy.log"
     
     touch "$INSTALL_DIR/logs/service.log"
     chmod 644 "$INSTALL_DIR/logs/service.log"
-    chown root:video "$INSTALL_DIR/logs/service.log"
+    chown "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/logs/service.log"
     
-    print_success "Directories created with correct permissions"
+    print_success "Directories created with correct permissions for user $SERVICE_USER"
 }
 
 # Create systemd service
@@ -355,14 +408,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-Group=video
+# Run as dedicated pirdfy user (not root)
+User=${SERVICE_USER}
+Group=${SERVICE_GROUP}
 WorkingDirectory=${INSTALL_DIR}
 
 # Environment
 Environment=PATH=${INSTALL_DIR}/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PYTHONUNBUFFERED=1
-Environment=HOME=/root
+Environment=HOME=${INSTALL_DIR}
+Environment=XDG_RUNTIME_DIR=/run/user/\$(id -u ${SERVICE_USER})
 
 # Start command
 ExecStart=${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/src/main.py --config ${INSTALL_DIR}/config/config.yaml
@@ -373,18 +428,21 @@ RestartSec=10
 TimeoutStartSec=60
 TimeoutStopSec=30
 
-# Allow camera and hardware access
+# Allow camera and hardware access via supplementary groups
 SupplementaryGroups=video gpio i2c spi
 
-# Device access for camera
+# Device access for Raspberry Pi camera
 DeviceAllow=/dev/video* rw
 DeviceAllow=/dev/vchiq rw
 DeviceAllow=/dev/dma_heap/* rw
+DeviceAllow=/dev/media* rw
 
-# Security settings (allow camera access)
-PrivateTmp=false
-ProtectSystem=false
-ReadWritePaths=${INSTALL_DIR}/data ${INSTALL_DIR}/logs
+# Security hardening
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+ReadWritePaths=${INSTALL_DIR}/data ${INSTALL_DIR}/logs ${INSTALL_DIR}/models
 
 # Logging - redirect to files
 StandardOutput=append:${INSTALL_DIR}/logs/service.log
@@ -404,7 +462,7 @@ EOF
     # Enable service to start on boot
     systemctl enable ${SERVICE_NAME}
     
-    print_success "Systemd service created and enabled"
+    print_success "Systemd service created (runs as user: ${SERVICE_USER})"
 }
 
 # Create convenience scripts
@@ -459,9 +517,24 @@ EOF
 #!/bin/bash
 # Fix permissions for Pirdfy data and log directories
 INSTALL_DIR="/opt/pirdfy"
+SERVICE_USER="pirdfy"
+SERVICE_GROUP="pirdfy"
 
-sudo chown -R root:video "$INSTALL_DIR/data"
-sudo chown -R root:video "$INSTALL_DIR/logs"
+echo "Fixing permissions for Pirdfy..."
+
+# Ensure user exists
+if ! id "$SERVICE_USER" &>/dev/null; then
+    echo "Error: User $SERVICE_USER does not exist"
+    exit 1
+fi
+
+# Fix ownership
+sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/data"
+sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/logs"
+sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/models"
+
+# Fix directory permissions
+sudo chmod 755 "$INSTALL_DIR"
 sudo chmod 755 "$INSTALL_DIR/data"
 sudo chmod -R 755 "$INSTALL_DIR/data/photos"
 sudo chmod -R 755 "$INSTALL_DIR/data/birds"
@@ -470,7 +543,10 @@ sudo chmod -R 755 "$INSTALL_DIR/data/annotated"
 sudo chmod 755 "$INSTALL_DIR/logs"
 sudo chmod 644 "$INSTALL_DIR/logs/"*.log 2>/dev/null
 
-echo "Permissions fixed."
+# Ensure pirdfy user is in video group
+sudo usermod -aG video "$SERVICE_USER"
+
+echo "✓ Permissions fixed for user $SERVICE_USER"
 EOF
     chmod +x /usr/local/bin/pirdfy-fix-permissions
     
@@ -529,22 +605,43 @@ verify_installation() {
     
     local errors=0
     
-    # Check directories exist and are writable
+    # Check service user exists
+    if id "$SERVICE_USER" &>/dev/null; then
+        print_success "Service user '$SERVICE_USER' exists"
+    else
+        print_error "Service user '$SERVICE_USER' not found"
+        ((errors++))
+    fi
+    
+    # Check service user is in video group
+    if id "$SERVICE_USER" 2>/dev/null | grep -q video; then
+        print_success "Service user is in video group"
+    else
+        print_error "Service user not in video group"
+        ((errors++))
+    fi
+    
+    # Check directories exist and are owned by service user
     for dir in data/photos data/birds data/videos data/annotated logs; do
-        if [[ -d "$INSTALL_DIR/$dir" ]] && [[ -w "$INSTALL_DIR/$dir" ]]; then
-            print_success "Directory $dir is writable"
+        if [[ -d "$INSTALL_DIR/$dir" ]]; then
+            owner=$(stat -c '%U' "$INSTALL_DIR/$dir")
+            if [[ "$owner" == "$SERVICE_USER" ]]; then
+                print_success "Directory $dir owned by $SERVICE_USER"
+            else
+                print_warning "Directory $dir owned by $owner (expected $SERVICE_USER)"
+            fi
         else
-            print_error "Directory $dir is not writable"
+            print_error "Directory $dir does not exist"
             ((errors++))
         fi
     done
     
-    # Check log file is writable
-    if touch "$INSTALL_DIR/logs/test.log" 2>/dev/null; then
+    # Check log file is writable by service user
+    if sudo -u "$SERVICE_USER" touch "$INSTALL_DIR/logs/test.log" 2>/dev/null; then
         rm -f "$INSTALL_DIR/logs/test.log"
-        print_success "Log directory is writable"
+        print_success "Log directory is writable by $SERVICE_USER"
     else
-        print_error "Cannot write to log directory"
+        print_error "Cannot write to log directory as $SERVICE_USER"
         ((errors++))
     fi
     
@@ -572,15 +669,15 @@ verify_installation() {
         ((errors++))
     fi
     
-    # Check video group membership
-    if groups | grep -q video; then
-        print_success "Current user in video group"
+    # Check camera access
+    if [[ -e /dev/video0 ]] || [[ -e /dev/vchiq ]]; then
+        print_success "Camera device detected"
     else
-        print_warning "Current user not in video group"
+        print_warning "No camera device found (may need reboot or camera not connected)"
     fi
     
     if [[ $errors -gt 0 ]]; then
-        print_warning "Installation completed with $errors warning(s)"
+        print_warning "Installation completed with $errors issue(s)"
     else
         print_success "All verification checks passed"
     fi
@@ -629,6 +726,7 @@ main() {
     
     check_root
     check_requirements
+    create_service_user
     install_dependencies
     install_picamera2_deps
     setup_installation

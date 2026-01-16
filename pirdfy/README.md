@@ -2,52 +2,82 @@
 
 A Raspberry Pi 5-based bird feeder camera system that captures, detects, and catalogs birds visiting your feeder.
 
-![Pirdfy Dashboard](docs/screenshot.png)
-
 ## Features
 
 - 📸 **Automatic Photo Capture** - Configurable interval (1 second default)
-- 🔍 **Bird Detection** - AI-powered bird segmentation and detection
+- 🔍 **Bird Detection** - YOLOv8-powered bird detection and segmentation
 - 📹 **Video Mode** - Automatically record video when birds are detected
 - 📊 **Statistics Dashboard** - Heatmaps by hour and species
-- 📷 **Multi-Camera Support** - Support for 1-2 cameras
+- 📷 **Multi-Camera Support** - Support for 1-2 Raspberry Pi cameras
 - 🔋 **Battery Monitoring** - Track battery status on portable setups
 - 📱 **Mobile-Friendly** - Access dashboard from your phone
-
-## Quick Install
-
-```bash
-curl -sSL https://raw.githubusercontent.com/yourusername/pirdfy/main/install.sh | bash
-```
-
-Or manually:
-
-```bash
-git clone https://github.com/yourusername/pirdfy.git
-cd pirdfy
-chmod +x install.sh
-./install.sh
-```
+- 🔒 **Security** - Runs as dedicated `pirdfy` user (not root)
 
 ## Requirements
 
 - Raspberry Pi 5 (4GB+ RAM recommended)
-- Raspberry Pi Camera Module v2/v3 or compatible USB camera
+- **Raspberry Pi Camera Module v2/v3** (uses picamera2/libcamera)
+- Raspberry Pi OS (Bookworm or newer recommended)
 - Python 3.11+
 - 32GB+ SD card recommended
 
-## Usage
+## Installation
 
-### Start the Service
+### Option 1: From GitHub (after pushing to repo)
 
 ```bash
-# Start as service (recommended)
-sudo systemctl start pirdfy
+# Clone and install
+git clone https://github.com/andjar/pirdfy.git
+cd pirdfy
+sudo chmod +x install.sh
+sudo ./install.sh
+```
 
-# Or run directly
-cd /opt/pirdfy
-source venv/bin/activate
-python src/main.py
+### Option 2: One-liner (after pushing to repo)
+
+```bash
+curl -sSL https://raw.githubusercontent.com/andjar/pirdfy/main/install.sh | sudo bash
+```
+
+### Option 3: Manual installation (local files)
+
+```bash
+# Copy project to your Pi, then:
+cd pirdfy
+sudo chmod +x install.sh
+sudo ./install.sh
+```
+
+## What the installer does
+
+1. Creates a dedicated `pirdfy` system user (security)
+2. Installs system dependencies (libcamera, picamera2, etc.)
+3. Sets up Python virtual environment with system packages
+4. Downloads YOLOv8 bird detection model
+5. Creates systemd service for auto-start
+6. Sets up proper file permissions
+
+## Usage
+
+### Quick Commands
+
+```bash
+pirdfy-start           # Start the service
+pirdfy-stop            # Stop the service
+pirdfy-status          # Check service status
+pirdfy-logs            # View live logs
+pirdfy-update          # Update to latest version
+pirdfy-test-camera     # Test camera connectivity
+pirdfy-fix-permissions # Fix file permissions
+```
+
+### Manual Control
+
+```bash
+sudo systemctl start pirdfy
+sudo systemctl stop pirdfy
+sudo systemctl restart pirdfy
+sudo systemctl status pirdfy
 ```
 
 ### Access Dashboard
@@ -57,14 +87,11 @@ Open your browser and navigate to:
 http://<raspberry-pi-ip>:8080
 ```
 
-Or if connecting directly via hotspot:
-```
-http://pirdfy.local:8080
-```
+Find your Pi's IP with: `hostname -I`
 
 ## Configuration
 
-Edit `config/config.yaml`:
+Edit `/opt/pirdfy/config/config.yaml`:
 
 ```yaml
 camera:
@@ -72,11 +99,10 @@ camera:
   resolution: [1920, 1080]
   cameras:
     - id: 0
-      name: "Front Feeder"
+      name: "Bird Feeder"
       enabled: true
-    - id: 1
-      name: "Side Feeder"
-      enabled: false
+      exposure: auto
+      white_balance: auto
 
 detection:
   model: "yolov8n"
@@ -84,12 +110,57 @@ detection:
   
 video:
   enabled: true
-  duration: 20  # seconds
+  duration: 20  # seconds to record
   cooldown: 10  # seconds between recordings
 
 web:
   host: "0.0.0.0"
   port: 8080
+```
+
+## Troubleshooting
+
+### Camera not detected
+
+```bash
+# Test camera
+pirdfy-test-camera
+
+# Or manually:
+rpicam-hello --list-cameras
+libcamera-hello --list-cameras
+```
+
+### Permission issues
+
+```bash
+# Fix permissions
+pirdfy-fix-permissions
+
+# Check pirdfy user is in video group
+groups pirdfy
+```
+
+### Service won't start
+
+```bash
+# Check logs
+pirdfy-logs
+
+# Or:
+sudo journalctl -u pirdfy -f
+
+# Check service status
+sudo systemctl status pirdfy
+```
+
+### After reboot camera not working
+
+You may need to enable the camera interface:
+```bash
+sudo raspi-config
+# Interface Options -> Camera -> Enable
+sudo reboot
 ```
 
 ## API Endpoints
@@ -104,33 +175,41 @@ web:
 | `/api/config` | GET/POST | Get/update configuration |
 | `/api/camera/settings` | GET/POST | Camera settings |
 | `/api/status` | GET | System status (battery, etc.) |
+| `/api/control/start` | POST | Start capture |
+| `/api/control/stop` | POST | Stop capture |
 
 ## Project Structure
 
 ```
-pirdfy/
-├── install.sh           # Installation script
-├── requirements.txt     # Python dependencies
+/opt/pirdfy/
 ├── config/
 │   └── config.yaml      # Configuration
 ├── src/
 │   ├── main.py          # Main entry point
-│   ├── camera.py        # Camera handling
-│   ├── detector.py      # Bird detection
+│   ├── camera.py        # Raspberry Pi camera handling
+│   ├── detector.py      # YOLOv8 bird detection
 │   ├── recorder.py      # Video recording
 │   ├── database.py      # SQLite database
 │   ├── battery.py       # Battery monitoring
 │   └── web/
 │       ├── app.py       # Flask web server
-│       ├── static/      # CSS, JS assets
 │       └── templates/   # HTML templates
-├── models/              # Detection models
 ├── data/
 │   ├── photos/          # Captured photos
 │   ├── birds/           # Cropped bird images
-│   └── videos/          # Recorded videos
-└── logs/                # Application logs
+│   ├── videos/          # Recorded videos
+│   └── pirdfy.db        # SQLite database
+├── logs/                # Application logs
+├── models/              # Detection models
+└── venv/                # Python virtual environment
 ```
+
+## Security
+
+- Runs as dedicated `pirdfy` user (not root)
+- Systemd security hardening enabled
+- No external network access required
+- All data stored locally
 
 ## Inspired By
 
@@ -138,4 +217,4 @@ pirdfy/
 
 ## License
 
-MIT License - see LICENSE file
+MIT License
