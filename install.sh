@@ -177,10 +177,11 @@ install_dependencies() {
         libtiff-dev \
         libwebp-dev
     
-    # Math/ML libraries - handle Ubuntu vs Raspberry Pi OS differences
-    # libatlas-base-dev is not available on Ubuntu, use alternatives
+    # Math/ML libraries
+    # Note: libatlas-base-dev has been removed from Debian trixie and newer Ubuntu
+    # See: https://github.com/numpy/numpy/issues/29108
+    # Using libopenblas-dev as the recommended alternative
     apt-get install -y libopenblas-dev || true
-    apt-get install -y libatlas-base-dev 2>/dev/null || print_info "libatlas-base-dev not available, using libopenblas instead"
     apt-get install -y libhdf5-dev || true
     apt-get install -y liblapack-dev || true
     
