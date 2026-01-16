@@ -236,6 +236,9 @@ setup_installation() {
     # Create directory
     mkdir -p "$INSTALL_DIR"
     
+    # Add safe directory for git (required when running as root with different owner)
+    git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
+    
     # Get script directory
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     
