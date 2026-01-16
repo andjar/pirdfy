@@ -218,6 +218,20 @@ install_picamera2_deps() {
     # Add service user to video group for camera access
     usermod -aG video "$SERVICE_USER" 2>/dev/null || true
     
+    # Create udev rules for camera device access
+    print_info "Creating udev rules for camera access..."
+    cat > /etc/udev/rules.d/99-camera.rules << 'UDEV_EOF'
+# Allow video group access to camera devices
+SUBSYSTEM=="video4linux", GROUP="video", MODE="0660"
+SUBSYSTEM=="media", GROUP="video", MODE="0660"
+KERNEL=="vchiq", GROUP="video", MODE="0660"
+SUBSYSTEM=="dma_heap", GROUP="video", MODE="0660"
+UDEV_EOF
+    
+    # Reload udev rules
+    udevadm control --reload-rules
+    udevadm trigger
+    
     # Test if camera is detected
     print_info "Testing camera detection..."
     if command -v rpicam-hello &> /dev/null; then
@@ -422,7 +436,7 @@ create_service() {
     
     # Build list of supplementary groups that exist
     SUPP_GROUPS="video"
-    for grp in gpio i2c spi render; do
+    for grp in gpio i2c spi render plugdev; do
         if getent group "$grp" > /dev/null 2>&1; then
             SUPP_GROUPS="$SUPP_GROUPS $grp"
         fi
@@ -445,6 +459,7 @@ WorkingDirectory=${INSTALL_DIR}
 Environment=PATH=${INSTALL_DIR}/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PYTHONUNBUFFERED=1
 Environment=HOME=${INSTALL_DIR}
+Environment=XDG_RUNTIME_DIR=/run/user/1000
 
 # Start command
 ExecStart=${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/src/main.py --config ${INSTALL_DIR}/config/config.yaml
@@ -458,18 +473,14 @@ TimeoutStopSec=30
 # Allow camera and hardware access via supplementary groups
 SupplementaryGroups=${SUPP_GROUPS}
 
-# Device access for Raspberry Pi camera
-DeviceAllow=/dev/video* rw
-DeviceAllow=/dev/vchiq rw
-DeviceAllow=/dev/dma_heap/* rw
-DeviceAllow=/dev/media* rw
-
-# Security hardening (relaxed for camera access)
-PrivateTmp=true
+# IMPORTANT: Disable all security restrictions for camera access
+# libcamera requires full access to /dev/media*, /dev/video*, /dev/dma_heap/*
+PrivateTmp=false
+PrivateDevices=false
 ProtectSystem=false
-ProtectHome=read-only
+ProtectHome=false
 NoNewPrivileges=false
-ReadWritePaths=${INSTALL_DIR}/data ${INSTALL_DIR}/logs ${INSTALL_DIR}/models
+DevicePolicy=auto
 
 # Logging - redirect to files
 StandardOutput=append:${INSTALL_DIR}/logs/service.log

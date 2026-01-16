@@ -130,22 +130,23 @@ class Pirdfy:
             self.database = get_database(f"{data_path}/pirdfy.db")
             self.logger.info("Database initialized")
             
-            # Camera Manager
+            # Camera Manager - continue even if no cameras found
             self.camera_manager = CameraManager(self.config)
             if not self.camera_manager.initialize():
-                self.logger.error("Failed to initialize cameras")
-                return False
-            self.logger.info("Camera manager initialized")
+                self.logger.warning("No cameras initialized - running in web-only mode")
+                self.logger.warning("Camera features will be unavailable")
+            else:
+                self.logger.info(f"Camera manager initialized with {len(self.camera_manager.cameras)} camera(s)")
             
-            # Bird Detector
+            # Bird Detector - continue even if detector fails
             self.detector = BirdDetector(
                 self.config,
                 birds_dir=f"{data_path}/birds"
             )
             if not self.detector.initialize():
-                self.logger.error("Failed to initialize detector")
-                return False
-            self.logger.info("Bird detector initialized")
+                self.logger.warning("Bird detector not initialized - detection disabled")
+            else:
+                self.logger.info("Bird detector initialized")
             
             # Detection Pipeline
             self.pipeline = DetectionPipeline(
@@ -197,33 +198,39 @@ class Pirdfy:
     def _connect_components(self):
         """Connect components via callbacks."""
         
-        # Camera capture -> Detection pipeline
-        def on_capture(capture_results):
-            for result in capture_results:
-                detection_result = self.pipeline.process_capture(result)
-                
-                # Emit WebSocket events
-                if self.web_app and result.success:
-                    self.web_app.emit_new_photo({
-                        "id": result.filepath,
-                        "filename": result.filename,
-                        "camera_id": result.camera_id,
-                        "timestamp": result.timestamp.isoformat() if result.timestamp else None
-                    })
+        # Only connect camera callbacks if we have cameras
+        if self.camera_manager and self.camera_manager.cameras:
+            # Camera capture -> Detection pipeline
+            def on_capture(capture_results):
+                for result in capture_results:
+                    if self.pipeline:
+                        detection_result = self.pipeline.process_capture(result)
+                    else:
+                        detection_result = None
                     
-                    if detection_result and detection_result.detections:
-                        for det in detection_result.detections:
-                            self.web_app.emit_bird_detected({
-                                "confidence": det.confidence,
-                                "bbox": det.bbox,
-                                "cropped_image": det.cropped_path
-                            })
-        
-        self.camera_manager.add_capture_callback(on_capture)
-        
-        # Bird detection -> Video recording
-        bird_handler = create_bird_detection_handler(self.video_recorder)
-        self.pipeline.add_bird_detected_callback(bird_handler)
+                    # Emit WebSocket events
+                    if self.web_app and result.success:
+                        self.web_app.emit_new_photo({
+                            "id": result.filepath,
+                            "filename": result.filename,
+                            "camera_id": result.camera_id,
+                            "timestamp": result.timestamp.isoformat() if result.timestamp else None
+                        })
+                        
+                        if detection_result and detection_result.detections:
+                            for det in detection_result.detections:
+                                self.web_app.emit_bird_detected({
+                                    "confidence": det.confidence,
+                                    "bbox": det.bbox,
+                                    "cropped_image": det.cropped_path
+                                })
+            
+            self.camera_manager.add_capture_callback(on_capture)
+            
+            # Bird detection -> Video recording
+            if self.pipeline and self.video_recorder:
+                bird_handler = create_bird_detection_handler(self.video_recorder)
+                self.pipeline.add_bird_detected_callback(bird_handler)
         
         # Video recording events
         if self.web_app:
@@ -259,13 +266,19 @@ class Pirdfy:
         
         try:
             # Start system monitor
-            self.system_monitor.start()
+            if self.system_monitor:
+                self.system_monitor.start()
             
-            # Start video recorder
-            self.video_recorder.start()
+            # Start video recorder (only if we have cameras)
+            if self.video_recorder and self.camera_manager and self.camera_manager.cameras:
+                self.video_recorder.start()
             
-            # Start camera capture
-            self.camera_manager.start_continuous_capture()
+            # Start camera capture (only if we have cameras)
+            if self.camera_manager and self.camera_manager.cameras:
+                self.camera_manager.start_continuous_capture()
+                self.logger.info("Camera capture started")
+            else:
+                self.logger.warning("No cameras available - capture disabled")
             
             # Start web server (blocking)
             web_config = self.config.get("web", {})
