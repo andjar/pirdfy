@@ -52,12 +52,16 @@ def create_app(config: dict, camera_manager=None, detector=None, pipeline=None,
     app.database = database
     app.config_data = config
     
-    # Data paths
-    data_path = Path(config.get("storage", {}).get("data_path", "data"))
+    # Data paths - resolve to absolute for send_from_directory
+    data_path = Path(config.get("storage", {}).get("data_path", "data")).resolve()
     photos_path = data_path / "photos"
     birds_path = data_path / "birds"
     videos_path = data_path / "videos"
     annotated_path = data_path / "annotated"
+    
+    # Ensure directories exist
+    for p in [photos_path, birds_path, videos_path, annotated_path]:
+        p.mkdir(parents=True, exist_ok=True)
     
     # ================== Page Routes ==================
     
