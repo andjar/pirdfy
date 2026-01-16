@@ -1,0 +1,132 @@
+# Pirdfy Configuration
+# Bird Feeder Camera Detector
+
+# Camera Settings
+camera:
+  # Interval between photo captures (seconds)
+  capture_interval: 1
+  
+  # Photo resolution [width, height]
+  resolution: [1920, 1080]
+  
+  # JPEG quality (1-100)
+  jpeg_quality: 85
+  
+  # Camera configurations (supports up to 2 cameras)
+  cameras:
+    - id: 0
+      name: "Primary Camera"
+      enabled: true
+      # Exposure settings: auto, or manual value
+      exposure: auto
+      # White balance: auto, sunlight, cloudy, shade, tungsten, fluorescent
+      white_balance: auto
+      # Brightness adjustment (-1.0 to 1.0)
+      brightness: 0.0
+      # Contrast adjustment (0.0 to 2.0)
+      contrast: 1.0
+      # Saturation adjustment (0.0 to 2.0)
+      saturation: 1.0
+      
+    - id: 1
+      name: "Secondary Camera"
+      enabled: false
+      exposure: auto
+      white_balance: auto
+      brightness: 0.0
+      contrast: 1.0
+      saturation: 1.0
+
+# Bird Detection Settings
+detection:
+  # Model to use: yolov8n (nano), yolov8s (small), yolov8m (medium)
+  model: "yolov8n"
+  
+  # Minimum confidence threshold (0.0 - 1.0)
+  confidence_threshold: 0.5
+  
+  # Enable bird segmentation (crop detected birds)
+  enable_segmentation: true
+  
+  # Save images with no birds detected
+  save_empty_frames: false
+  
+  # Classes to detect (COCO dataset bird class)
+  target_classes:
+    - bird
+
+# Video Recording Settings
+video:
+  # Enable video mode
+  enabled: true
+  
+  # Duration of video recording when bird detected (seconds)
+  duration: 20
+  
+  # Cooldown period between recordings (seconds)
+  cooldown: 10
+  
+  # Video resolution [width, height]
+  resolution: [1920, 1080]
+  
+  # Frames per second
+  fps: 30
+  
+  # Video codec: h264, mjpeg
+  codec: h264
+
+# Web Dashboard Settings
+web:
+  # Host to bind to (0.0.0.0 for all interfaces)
+  host: "0.0.0.0"
+  
+  # Port number
+  port: 8080
+  
+  # Enable debug mode (disable in production)
+  debug: false
+  
+  # Maximum photos to show in gallery
+  gallery_limit: 100
+  
+  # Enable real-time updates via WebSocket
+  websocket_enabled: true
+
+# Storage Settings
+storage:
+  # Base path for data (photos, videos, database)
+  data_path: "data"
+  
+  # Maximum storage usage in GB (0 = unlimited)
+  max_storage_gb: 0
+  
+  # Days to keep photos (0 = forever)
+  photo_retention_days: 30
+  
+  # Days to keep videos (0 = forever)
+  video_retention_days: 7
+
+# Logging Settings
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: INFO
+  
+  # Log file path
+  file: "logs/pirdfy.log"
+  
+  # Maximum log file size in MB
+  max_size_mb: 10
+  
+  # Number of backup log files to keep
+  backup_count: 5
+
+# System Settings
+system:
+  # Enable battery monitoring (for portable setups)
+  battery_monitoring: true
+  
+  # Enable system stats collection
+  collect_stats: true
+  
+  # Stats collection interval (seconds)
+  stats_interval: 60

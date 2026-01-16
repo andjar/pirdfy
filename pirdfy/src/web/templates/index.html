@@ -1,0 +1,1047 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pirdfy — Bird Feeder Camera</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    
+    <!-- Socket.IO -->
+    <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
+    
+    <!-- Chart.js for statistics -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        :root {
+            --bg-dark: #0a0a0b;
+            --bg-card: #111113;
+            --bg-card-hover: #161618;
+            --border-color: #1f1f23;
+            --text-primary: #fafafa;
+            --text-secondary: #a1a1aa;
+            --text-muted: #52525b;
+            --accent-green: #22c55e;
+            --accent-green-dim: rgba(34, 197, 94, 0.15);
+            --accent-amber: #f59e0b;
+            --accent-amber-dim: rgba(245, 158, 11, 0.15);
+            --accent-rose: #f43f5e;
+            --accent-rose-dim: rgba(244, 63, 94, 0.15);
+            --accent-sky: #0ea5e9;
+            --accent-sky-dim: rgba(14, 165, 233, 0.15);
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'DM Sans', -apple-system, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.5;
+        }
+        
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        /* Layout */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 1rem;
+        }
+        
+        /* Header */
+        header {
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 0;
+            position: sticky;
+            top: 0;
+            background: rgba(10, 10, 11, 0.9);
+            backdrop-filter: blur(12px);
+            z-index: 100;
+        }
+        
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        
+        .logo-icon {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, var(--accent-green) 0%, var(--accent-sky) 100%);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+        
+        .logo-text {
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+        }
+        
+        nav {
+            display: flex;
+            gap: 0.25rem;
+        }
+        
+        nav a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-weight: 500;
+            font-size: 0.875rem;
+            transition: all 0.15s ease;
+        }
+        
+        nav a:hover, nav a.active {
+            color: var(--text-primary);
+            background: var(--bg-card);
+        }
+        
+        /* Status indicator */
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.375rem 0.75rem;
+            background: var(--accent-green-dim);
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: var(--accent-green);
+        }
+        
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            background: var(--accent-green);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-indicator.offline {
+            background: var(--accent-rose-dim);
+            color: var(--accent-rose);
+        }
+        
+        .status-indicator.offline .status-dot {
+            background: var(--accent-rose);
+            animation: none;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* Main Content */
+        main {
+            padding: 2rem 0;
+        }
+        
+        /* Grid */
+        .grid {
+            display: grid;
+            gap: 1rem;
+        }
+        
+        .grid-2 { grid-template-columns: repeat(2, 1fr); }
+        .grid-3 { grid-template-columns: repeat(3, 1fr); }
+        .grid-4 { grid-template-columns: repeat(4, 1fr); }
+        
+        @media (max-width: 1024px) {
+            .grid-4 { grid-template-columns: repeat(2, 1fr); }
+            .grid-3 { grid-template-columns: repeat(2, 1fr); }
+        }
+        
+        @media (max-width: 640px) {
+            .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; }
+        }
+        
+        /* Cards */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.25rem;
+            transition: all 0.2s ease;
+        }
+        
+        .card:hover {
+            background: var(--bg-card-hover);
+            border-color: #27272a;
+        }
+        
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        
+        .card-title {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+        }
+        
+        .card-value {
+            font-size: 2rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+            line-height: 1;
+            margin-bottom: 0.25rem;
+        }
+        
+        .card-label {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+        
+        /* Stats Cards */
+        .stat-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+        
+        .stat-icon.green { background: var(--accent-green-dim); }
+        .stat-icon.amber { background: var(--accent-amber-dim); }
+        .stat-icon.rose { background: var(--accent-rose-dim); }
+        .stat-icon.sky { background: var(--accent-sky-dim); }
+        
+        /* Photo Grid */
+        .photo-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 0.75rem;
+        }
+        
+        .photo-item {
+            position: relative;
+            aspect-ratio: 4/3;
+            border-radius: 8px;
+            overflow: hidden;
+            cursor: pointer;
+            background: var(--bg-card);
+        }
+        
+        .photo-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: transform 0.3s ease;
+        }
+        
+        .photo-item:hover img {
+            transform: scale(1.05);
+        }
+        
+        .photo-item .overlay {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(to top, rgba(0,0,0,0.8) 0%, transparent 50%);
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            display: flex;
+            align-items: flex-end;
+            padding: 0.75rem;
+        }
+        
+        .photo-item:hover .overlay {
+            opacity: 1;
+        }
+        
+        .photo-info {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .bird-badge {
+            background: var(--accent-green);
+            color: #000;
+            font-size: 0.625rem;
+            font-weight: 700;
+            padding: 0.125rem 0.5rem;
+            border-radius: 9999px;
+            text-transform: uppercase;
+        }
+        
+        .photo-time {
+            font-size: 0.75rem;
+            color: rgba(255,255,255,0.8);
+        }
+        
+        /* Live Preview */
+        .live-preview {
+            position: relative;
+            aspect-ratio: 16/9;
+            background: var(--bg-card);
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+        }
+        
+        .live-preview img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        .live-badge {
+            position: absolute;
+            top: 1rem;
+            left: 1rem;
+            background: var(--accent-rose);
+            color: white;
+            font-size: 0.625rem;
+            font-weight: 700;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            text-transform: uppercase;
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+        }
+        
+        .live-badge::before {
+            content: '';
+            width: 6px;
+            height: 6px;
+            background: white;
+            border-radius: 50%;
+            animation: pulse 1s infinite;
+        }
+        
+        /* Heatmap */
+        .heatmap {
+            display: grid;
+            grid-template-columns: repeat(24, 1fr);
+            gap: 2px;
+        }
+        
+        .heatmap-cell {
+            aspect-ratio: 1;
+            border-radius: 2px;
+            min-width: 12px;
+            transition: all 0.15s ease;
+        }
+        
+        .heatmap-cell:hover {
+            transform: scale(1.3);
+            z-index: 10;
+        }
+        
+        .heatmap-legend {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 0.5rem;
+            font-size: 0.625rem;
+            color: var(--text-muted);
+        }
+        
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            font-family: inherit;
+        }
+        
+        .btn-primary {
+            background: var(--accent-green);
+            color: #000;
+        }
+        
+        .btn-primary:hover {
+            background: #16a34a;
+        }
+        
+        .btn-secondary {
+            background: var(--bg-card);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+        
+        .btn-secondary:hover {
+            background: var(--bg-card-hover);
+            border-color: #27272a;
+        }
+        
+        .btn-danger {
+            background: var(--accent-rose-dim);
+            color: var(--accent-rose);
+        }
+        
+        .btn-danger:hover {
+            background: rgba(244, 63, 94, 0.25);
+        }
+        
+        /* Controls */
+        .controls {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+        
+        /* Range Slider */
+        .slider-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        
+        .slider-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.875rem;
+        }
+        
+        .slider-value {
+            color: var(--accent-green);
+            font-weight: 600;
+        }
+        
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            background: var(--border-color);
+            border-radius: 3px;
+            appearance: none;
+            cursor: pointer;
+        }
+        
+        input[type="range"]::-webkit-slider-thumb {
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            background: var(--accent-green);
+            border-radius: 50%;
+            cursor: pointer;
+        }
+        
+        /* Section Headers */
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        
+        .section-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+        }
+        
+        .section-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.875rem;
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+        
+        .section-link:hover {
+            color: var(--text-primary);
+        }
+        
+        /* System Stats */
+        .system-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 1rem;
+        }
+        
+        .system-stat {
+            text-align: center;
+        }
+        
+        .system-stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+        
+        .system-stat-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        /* Progress Ring */
+        .progress-ring {
+            width: 60px;
+            height: 60px;
+            margin: 0 auto 0.5rem;
+        }
+        
+        .progress-ring circle {
+            fill: none;
+            stroke-width: 4;
+        }
+        
+        .progress-ring .bg {
+            stroke: var(--border-color);
+        }
+        
+        .progress-ring .progress {
+            stroke: var(--accent-green);
+            stroke-linecap: round;
+            transform: rotate(-90deg);
+            transform-origin: 50% 50%;
+            transition: stroke-dashoffset 0.5s ease;
+        }
+        
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--text-muted);
+        }
+        
+        .empty-state-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+        
+        /* Utilities */
+        .mb-4 { margin-bottom: 1rem; }
+        .mb-6 { margin-bottom: 1.5rem; }
+        .mb-8 { margin-bottom: 2rem; }
+        .gap-4 { gap: 1rem; }
+        .text-green { color: var(--accent-green); }
+        .text-amber { color: var(--accent-amber); }
+        .text-rose { color: var(--accent-rose); }
+        .text-sky { color: var(--accent-sky); }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: var(--bg-dark);
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #27272a;
+        }
+    </style>
+</head>
+<body x-data="dashboard()" x-init="init()">
+    <header>
+        <div class="container header-content">
+            <div class="logo">
+                <div class="logo-icon">🐦</div>
+                <span class="logo-text">Pirdfy</span>
+            </div>
+            
+            <nav>
+                <a href="/" class="active">Dashboard</a>
+                <a href="/gallery">Gallery</a>
+                <a href="/stats">Statistics</a>
+                <a href="/settings">Settings</a>
+            </nav>
+            
+            <div class="status-indicator" :class="{ 'offline': !connected }">
+                <span class="status-dot"></span>
+                <span x-text="connected ? (capturing ? 'Capturing' : 'Connected') : 'Offline'"></span>
+            </div>
+        </div>
+    </header>
+    
+    <main class="container">
+        <!-- Stats Overview -->
+        <div class="grid grid-4 mb-6">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Birds Today</span>
+                    <div class="stat-icon green">🐦</div>
+                </div>
+                <div class="card-value text-green" x-text="stats.birdsToday"></div>
+                <div class="card-label">detections</div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Photos Today</span>
+                    <div class="stat-icon sky">📸</div>
+                </div>
+                <div class="card-value text-sky" x-text="stats.photosToday"></div>
+                <div class="card-label">captured</div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Detection Rate</span>
+                    <div class="stat-icon amber">📊</div>
+                </div>
+                <div class="card-value text-amber" x-text="stats.detectionRate + '%'"></div>
+                <div class="card-label">success rate</div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Battery</span>
+                    <div class="stat-icon" :class="battery.percent > 20 ? 'green' : 'rose'">🔋</div>
+                </div>
+                <div class="card-value" :class="battery.percent > 20 ? 'text-green' : 'text-rose'" 
+                     x-text="battery.percent !== null ? battery.percent + '%' : '—'"></div>
+                <div class="card-label" x-text="battery.charging ? 'Charging' : 'On battery'"></div>
+            </div>
+        </div>
+        
+        <!-- Main Content Grid -->
+        <div class="grid grid-2 mb-6" style="grid-template-columns: 2fr 1fr;">
+            <!-- Live Preview -->
+            <div>
+                <div class="section-header">
+                    <h2 class="section-title">Live Feed</h2>
+                    <div class="controls">
+                        <button class="btn btn-secondary" @click="captureNow()" :disabled="!capturing">
+                            📷 Capture Now
+                        </button>
+                        <button class="btn" :class="capturing ? 'btn-danger' : 'btn-primary'" @click="toggleCapture()">
+                            <span x-text="capturing ? '⏹ Stop' : '▶ Start'"></span>
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="live-preview">
+                    <template x-if="latestPhoto">
+                        <img :src="'/api/photos/image/' + latestPhoto.filename" :alt="'Photo ' + latestPhoto.id">
+                    </template>
+                    <template x-if="!latestPhoto">
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📷</div>
+                            <p>No photos captured yet</p>
+                        </div>
+                    </template>
+                    <div class="live-badge" x-show="capturing">LIVE</div>
+                </div>
+                
+                <!-- Capture Settings -->
+                <div class="card" style="margin-top: 1rem;">
+                    <div class="slider-group">
+                        <div class="slider-label">
+                            <span>Capture Interval</span>
+                            <span class="slider-value mono" x-text="captureInterval + 's'"></span>
+                        </div>
+                        <input type="range" min="0.5" max="10" step="0.5" 
+                               x-model="captureInterval" 
+                               @change="updateCaptureInterval()">
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Recent Detections -->
+            <div>
+                <div class="section-header">
+                    <h2 class="section-title">Recent Birds</h2>
+                    <a href="/gallery?birds_only=true" class="section-link">View all →</a>
+                </div>
+                
+                <div class="photo-grid" style="grid-template-columns: repeat(2, 1fr);">
+                    <template x-for="bird in recentBirds.slice(0, 6)" :key="bird.id">
+                        <div class="photo-item" @click="showBirdDetail(bird)">
+                            <img :src="'/api/birds/image/' + bird.cropped_image.split('/').pop()" 
+                                 :alt="'Bird detection'">
+                            <div class="overlay">
+                                <div class="photo-info">
+                                    <span class="bird-badge" x-text="Math.round(bird.confidence * 100) + '%'"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+                
+                <template x-if="recentBirds.length === 0">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🔍</div>
+                        <p>No birds detected yet</p>
+                    </div>
+                </template>
+            </div>
+        </div>
+        
+        <!-- Hourly Activity Heatmap -->
+        <div class="card mb-6">
+            <div class="section-header" style="margin-bottom: 1.5rem;">
+                <h2 class="section-title">Activity by Hour (Last 7 Days)</h2>
+            </div>
+            
+            <div class="heatmap">
+                <template x-for="hour in 24" :key="hour">
+                    <div class="heatmap-cell" 
+                         :style="'background: ' + getHeatmapColor(heatmapData[hour - 1] || 0)"
+                         :title="(hour - 1) + ':00 - ' + getHeatmapValue(hour - 1) + ' birds'">
+                    </div>
+                </template>
+            </div>
+            <div class="heatmap-legend">
+                <span>00:00</span>
+                <span>06:00</span>
+                <span>12:00</span>
+                <span>18:00</span>
+                <span>23:00</span>
+            </div>
+        </div>
+        
+        <!-- System Status -->
+        <div class="card">
+            <div class="section-header" style="margin-bottom: 1.5rem;">
+                <h2 class="section-title">System Status</h2>
+                <span class="mono" style="font-size: 0.75rem; color: var(--text-muted);" 
+                      x-text="'Uptime: ' + systemStatus.uptime"></span>
+            </div>
+            
+            <div class="system-stats">
+                <div class="system-stat">
+                    <svg class="progress-ring" viewBox="0 0 60 60">
+                        <circle class="bg" cx="30" cy="30" r="26"/>
+                        <circle class="progress" cx="30" cy="30" r="26"
+                                :style="'stroke-dasharray: 163.36; stroke-dashoffset: ' + (163.36 - (163.36 * (systemStatus.cpu || 0) / 100))"/>
+                    </svg>
+                    <div class="system-stat-value" x-text="Math.round(systemStatus.cpu || 0) + '%'"></div>
+                    <div class="system-stat-label">CPU</div>
+                </div>
+                
+                <div class="system-stat">
+                    <svg class="progress-ring" viewBox="0 0 60 60">
+                        <circle class="bg" cx="30" cy="30" r="26"/>
+                        <circle class="progress" cx="30" cy="30" r="26"
+                                :style="'stroke-dasharray: 163.36; stroke-dashoffset: ' + (163.36 - (163.36 * (systemStatus.memory || 0) / 100))"/>
+                    </svg>
+                    <div class="system-stat-value" x-text="Math.round(systemStatus.memory || 0) + '%'"></div>
+                    <div class="system-stat-label">Memory</div>
+                </div>
+                
+                <div class="system-stat">
+                    <svg class="progress-ring" viewBox="0 0 60 60">
+                        <circle class="bg" cx="30" cy="30" r="26"/>
+                        <circle class="progress" cx="30" cy="30" r="26"
+                                :style="'stroke-dasharray: 163.36; stroke-dashoffset: ' + (163.36 - (163.36 * (systemStatus.disk || 0) / 100))"/>
+                    </svg>
+                    <div class="system-stat-value" x-text="Math.round(systemStatus.disk || 0) + '%'"></div>
+                    <div class="system-stat-label">Disk</div>
+                </div>
+                
+                <div class="system-stat">
+                    <svg class="progress-ring" viewBox="0 0 60 60">
+                        <circle class="bg" cx="30" cy="30" r="26"/>
+                        <circle class="progress" cx="30" cy="30" r="26" 
+                                :style="'stroke: var(--accent-amber); stroke-dasharray: 163.36; stroke-dashoffset: ' + (163.36 - (163.36 * Math.min((systemStatus.temperature || 0), 85) / 85))"/>
+                    </svg>
+                    <div class="system-stat-value text-amber" x-text="(systemStatus.temperature || 0).toFixed(1) + '°'"></div>
+                    <div class="system-stat-label">Temp</div>
+                </div>
+                
+                <div class="system-stat">
+                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">
+                        <span x-text="videoRecording.recording ? '🔴' : '⚪'"></span>
+                    </div>
+                    <div class="system-stat-value" style="font-size: 1rem;" 
+                         x-text="videoRecording.recording ? 'Recording' : 'Standby'"></div>
+                    <div class="system-stat-label">Video</div>
+                </div>
+                
+                <div class="system-stat">
+                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">📷</div>
+                    <div class="system-stat-value" style="font-size: 1rem;" x-text="cameras.length"></div>
+                    <div class="system-stat-label">Cameras</div>
+                </div>
+            </div>
+        </div>
+    </main>
+    
+    <script>
+        function dashboard() {
+            return {
+                // Connection state
+                connected: false,
+                socket: null,
+                
+                // Capture state
+                capturing: false,
+                captureInterval: 1,
+                
+                // Stats
+                stats: {
+                    birdsToday: 0,
+                    photosToday: 0,
+                    detectionRate: 0
+                },
+                
+                // Battery
+                battery: {
+                    percent: null,
+                    charging: false
+                },
+                
+                // Data
+                latestPhoto: null,
+                recentBirds: [],
+                heatmapData: new Array(24).fill(0),
+                cameras: [],
+                
+                // System
+                systemStatus: {
+                    cpu: 0,
+                    memory: 0,
+                    disk: 0,
+                    temperature: 0,
+                    uptime: '—'
+                },
+                
+                // Video recording
+                videoRecording: {
+                    recording: false,
+                    enabled: true
+                },
+                
+                init() {
+                    this.connectWebSocket();
+                    this.fetchData();
+                    
+                    // Refresh data periodically
+                    setInterval(() => this.fetchData(), 5000);
+                },
+                
+                connectWebSocket() {
+                    this.socket = io();
+                    
+                    this.socket.on('connect', () => {
+                        this.connected = true;
+                        console.log('WebSocket connected');
+                    });
+                    
+                    this.socket.on('disconnect', () => {
+                        this.connected = false;
+                        console.log('WebSocket disconnected');
+                    });
+                    
+                    this.socket.on('new_photo', (data) => {
+                        this.latestPhoto = data;
+                        this.stats.photosToday++;
+                    });
+                    
+                    this.socket.on('bird_detected', (data) => {
+                        this.recentBirds.unshift(data);
+                        if (this.recentBirds.length > 20) {
+                            this.recentBirds.pop();
+                        }
+                        this.stats.birdsToday++;
+                    });
+                    
+                    this.socket.on('recording_started', () => {
+                        this.videoRecording.recording = true;
+                    });
+                    
+                    this.socket.on('recording_ended', () => {
+                        this.videoRecording.recording = false;
+                    });
+                    
+                    this.socket.on('status_update', (data) => {
+                        if (data.system) {
+                            this.updateSystemStatus(data.system);
+                        }
+                    });
+                },
+                
+                async fetchData() {
+                    try {
+                        // Fetch status
+                        const statusRes = await fetch('/api/status');
+                        const status = await statusRes.json();
+                        
+                        if (status.success) {
+                            this.capturing = status.cameras?.capturing || false;
+                            this.cameras = status.cameras || [];
+                            
+                            if (status.system) {
+                                this.updateSystemStatus(status.system);
+                            }
+                            
+                            if (status.uptime) {
+                                this.systemStatus.uptime = status.uptime;
+                            }
+                            
+                            if (status.video) {
+                                this.videoRecording = status.video;
+                            }
+                            
+                            if (status.pipeline) {
+                                this.stats.detectionRate = Math.round(status.pipeline.detection_rate * 100);
+                            }
+                        }
+                        
+                        // Fetch recent photos
+                        const photosRes = await fetch('/api/photos?limit=1');
+                        const photos = await photosRes.json();
+                        if (photos.success && photos.photos.length > 0) {
+                            this.latestPhoto = photos.photos[0];
+                        }
+                        
+                        // Fetch recent birds
+                        const birdsRes = await fetch('/api/birds?limit=20');
+                        const birds = await birdsRes.json();
+                        if (birds.success) {
+                            this.recentBirds = birds.detections.filter(d => d.cropped_image);
+                        }
+                        
+                        // Fetch daily stats
+                        const dailyRes = await fetch('/api/stats/daily?days=1');
+                        const daily = await dailyRes.json();
+                        if (daily.success && daily.summary.length > 0) {
+                            const today = daily.summary[0];
+                            this.stats.photosToday = today.total_photos || 0;
+                            this.stats.birdsToday = today.total_birds || 0;
+                        }
+                        
+                        // Fetch hourly heatmap
+                        const heatmapRes = await fetch('/api/stats/hourly?days=7');
+                        const heatmap = await heatmapRes.json();
+                        if (heatmap.success) {
+                            // Aggregate by hour
+                            const hourlyTotals = new Array(24).fill(0);
+                            heatmap.heatmap.forEach(entry => {
+                                hourlyTotals[entry.hour] += entry.total_birds || 0;
+                            });
+                            this.heatmapData = hourlyTotals;
+                        }
+                        
+                        // Fetch config
+                        const configRes = await fetch('/api/config');
+                        const config = await configRes.json();
+                        if (config.success && config.config.camera) {
+                            this.captureInterval = config.config.camera.capture_interval;
+                        }
+                        
+                    } catch (error) {
+                        console.error('Error fetching data:', error);
+                    }
+                },
+                
+                updateSystemStatus(system) {
+                    if (system.cpu) {
+                        this.systemStatus.cpu = system.cpu.percent;
+                        this.systemStatus.temperature = system.cpu.temperature || 0;
+                    }
+                    if (system.memory) {
+                        this.systemStatus.memory = system.memory.percent;
+                    }
+                    if (system.disk) {
+                        this.systemStatus.disk = system.disk.percent;
+                    }
+                    if (system.battery) {
+                        this.battery.percent = system.battery.percent;
+                        this.battery.charging = system.battery.charging;
+                    }
+                },
+                
+                async toggleCapture() {
+                    const endpoint = this.capturing ? '/api/control/stop' : '/api/control/start';
+                    try {
+                        const res = await fetch(endpoint, { method: 'POST' });
+                        const data = await res.json();
+                        if (data.success) {
+                            this.capturing = !this.capturing;
+                        }
+                    } catch (error) {
+                        console.error('Error toggling capture:', error);
+                    }
+                },
+                
+                async captureNow() {
+                    try {
+                        const res = await fetch('/api/camera/0/capture', { method: 'POST' });
+                        const data = await res.json();
+                        if (data.success) {
+                            setTimeout(() => this.fetchData(), 500);
+                        }
+                    } catch (error) {
+                        console.error('Error capturing:', error);
+                    }
+                },
+                
+                async updateCaptureInterval() {
+                    try {
+                        await fetch('/api/config', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ capture_interval: parseFloat(this.captureInterval) })
+                        });
+                    } catch (error) {
+                        console.error('Error updating interval:', error);
+                    }
+                },
+                
+                getHeatmapColor(value) {
+                    if (value === 0) return 'var(--border-color)';
+                    const max = Math.max(...this.heatmapData, 1);
+                    const intensity = Math.min(value / max, 1);
+                    const alpha = 0.2 + (intensity * 0.8);
+                    return `rgba(34, 197, 94, ${alpha})`;
+                },
+                
+                getHeatmapValue(hour) {
+                    return this.heatmapData[hour] || 0;
+                },
+                
+                showBirdDetail(bird) {
+                    // Could open a modal with bird details
+                    console.log('Bird detail:', bird);
+                }
+            };
+        }
+    </script>
+</body>
+</html>

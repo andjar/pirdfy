@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Statistics — Pirdfy</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        :root {
+            --bg-dark: #0a0a0b;
+            --bg-card: #111113;
+            --bg-card-hover: #161618;
+            --border-color: #1f1f23;
+            --text-primary: #fafafa;
+            --text-secondary: #a1a1aa;
+            --text-muted: #52525b;
+            --accent-green: #22c55e;
+            --accent-green-dim: rgba(34, 197, 94, 0.15);
+            --accent-amber: #f59e0b;
+            --accent-rose: #f43f5e;
+            --accent-sky: #0ea5e9;
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'DM Sans', sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.5;
+        }
+        
+        .container { max-width: 1400px; margin: 0 auto; padding: 0 1rem; }
+        
+        header {
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 0;
+            position: sticky;
+            top: 0;
+            background: rgba(10, 10, 11, 0.9);
+            backdrop-filter: blur(12px);
+            z-index: 100;
+        }
+        
+        .header-content { display: flex; justify-content: space-between; align-items: center; }
+        
+        .logo { display: flex; align-items: center; gap: 0.75rem; text-decoration: none; color: inherit; }
+        .logo-icon {
+            width: 32px; height: 32px;
+            background: linear-gradient(135deg, var(--accent-green) 0%, var(--accent-sky) 100%);
+            border-radius: 8px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.25rem;
+        }
+        .logo-text { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.025em; }
+        
+        nav { display: flex; gap: 0.25rem; }
+        nav a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-weight: 500;
+            font-size: 0.875rem;
+            transition: all 0.15s ease;
+        }
+        nav a:hover, nav a.active { color: var(--text-primary); background: var(--bg-card); }
+        
+        main { padding: 2rem 0; }
+        
+        .page-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 2rem; }
+        
+        .grid { display: grid; gap: 1rem; }
+        .grid-2 { grid-template-columns: repeat(2, 1fr); }
+        
+        @media (max-width: 768px) {
+            .grid-2 { grid-template-columns: 1fr; }
+        }
+        
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+        }
+        
+        .card-title {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 1rem;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+        
+        /* Heatmap Styles */
+        .heatmap-container {
+            overflow-x: auto;
+        }
+        
+        .heatmap-grid {
+            display: grid;
+            grid-template-columns: auto repeat(24, 1fr);
+            gap: 2px;
+            min-width: 600px;
+        }
+        
+        .heatmap-header {
+            font-size: 0.625rem;
+            color: var(--text-muted);
+            text-align: center;
+            padding: 0.25rem;
+        }
+        
+        .heatmap-row-label {
+            font-size: 0.625rem;
+            color: var(--text-muted);
+            padding-right: 0.5rem;
+            display: flex;
+            align-items: center;
+        }
+        
+        .heatmap-cell {
+            aspect-ratio: 1;
+            border-radius: 2px;
+            min-width: 16px;
+            min-height: 16px;
+            transition: all 0.15s ease;
+            cursor: pointer;
+        }
+        
+        .heatmap-cell:hover {
+            transform: scale(1.2);
+            z-index: 10;
+        }
+        
+        /* Species List */
+        .species-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        
+        .species-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.75rem;
+            background: var(--bg-dark);
+            border-radius: 8px;
+        }
+        
+        .species-icon {
+            font-size: 1.5rem;
+        }
+        
+        .species-info {
+            flex: 1;
+        }
+        
+        .species-name {
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+        
+        .species-bar {
+            height: 4px;
+            background: var(--border-color);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        
+        .species-bar-fill {
+            height: 100%;
+            background: var(--accent-green);
+            border-radius: 2px;
+            transition: width 0.3s ease;
+        }
+        
+        .species-count {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--accent-green);
+        }
+        
+        /* Summary Stats */
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        
+        .summary-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.25rem;
+            text-align: center;
+        }
+        
+        .summary-value {
+            font-size: 2rem;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 0.25rem;
+        }
+        
+        .summary-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .text-green { color: var(--accent-green); }
+        .text-sky { color: var(--accent-sky); }
+        .text-amber { color: var(--accent-amber); }
+        .text-rose { color: var(--accent-rose); }
+        
+        .mb-4 { margin-bottom: 1rem; }
+    </style>
+</head>
+<body x-data="stats()" x-init="init()">
+    <header>
+        <div class="container header-content">
+            <a href="/" class="logo">
+                <div class="logo-icon">🐦</div>
+                <span class="logo-text">Pirdfy</span>
+            </a>
+            
+            <nav>
+                <a href="/">Dashboard</a>
+                <a href="/gallery">Gallery</a>
+                <a href="/stats" class="active">Statistics</a>
+                <a href="/settings">Settings</a>
+            </nav>
+        </div>
+    </header>
+    
+    <main class="container">
+        <h1 class="page-title">Statistics</h1>
+        
+        <!-- Summary Cards -->
+        <div class="summary-grid">
+            <div class="summary-card">
+                <div class="summary-value text-green" x-text="summary.totalBirds"></div>
+                <div class="summary-label">Total Birds</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-value text-sky" x-text="summary.totalPhotos"></div>
+                <div class="summary-label">Total Photos</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-value text-amber" x-text="summary.detectionRate + '%'"></div>
+                <div class="summary-label">Detection Rate</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-value text-rose" x-text="summary.peakHour"></div>
+                <div class="summary-label">Peak Hour</div>
+            </div>
+        </div>
+        
+        <!-- Charts Grid -->
+        <div class="grid grid-2 mb-4">
+            <!-- Daily Activity Chart -->
+            <div class="card">
+                <div class="card-title">Daily Bird Activity (Last 7 Days)</div>
+                <div class="chart-container">
+                    <canvas id="dailyChart"></canvas>
+                </div>
+            </div>
+            
+            <!-- Species Distribution -->
+            <div class="card">
+                <div class="card-title">Species Distribution</div>
+                <div class="species-list">
+                    <template x-for="(species, index) in speciesData" :key="species.species">
+                        <div class="species-item">
+                            <div class="species-icon">🐦</div>
+                            <div class="species-info">
+                                <div class="species-name" x-text="species.species || 'Unknown'"></div>
+                                <div class="species-bar">
+                                    <div class="species-bar-fill" 
+                                         :style="'width: ' + getSpeciesPercent(species.count) + '%'"></div>
+                                </div>
+                            </div>
+                            <div class="species-count" x-text="species.count"></div>
+                        </div>
+                    </template>
+                    
+                    <template x-if="speciesData.length === 0">
+                        <div style="text-align: center; color: var(--text-muted); padding: 2rem;">
+                            No species data yet
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Hourly Heatmap -->
+        <div class="card">
+            <div class="card-title">Hourly Activity Heatmap (Last 7 Days)</div>
+            
+            <div class="heatmap-container">
+                <div class="heatmap-grid">
+                    <!-- Header row -->
+                    <div></div>
+                    <template x-for="hour in 24" :key="'h' + hour">
+                        <div class="heatmap-header" x-text="(hour - 1).toString().padStart(2, '0')"></div>
+                    </template>
+                    
+                    <!-- Data rows -->
+                    <template x-for="day in heatmapData" :key="day.date">
+                        <template x-for="(cell, idx) in [day.label, ...day.hours]" :key="day.date + idx">
+                            <template x-if="idx === 0">
+                                <div class="heatmap-row-label" x-text="cell"></div>
+                            </template>
+                            <template x-if="idx > 0">
+                                <div class="heatmap-cell" 
+                                     :style="'background: ' + getHeatmapColor(cell)"
+                                     :title="cell + ' birds at ' + (idx - 1) + ':00'">
+                                </div>
+                            </template>
+                        </template>
+                    </template>
+                </div>
+            </div>
+            
+            <!-- Legend -->
+            <div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; font-size: 0.75rem; color: var(--text-muted);">
+                <span>Less</span>
+                <div style="display: flex; gap: 2px;">
+                    <div style="width: 12px; height: 12px; background: var(--border-color); border-radius: 2px;"></div>
+                    <div style="width: 12px; height: 12px; background: rgba(34, 197, 94, 0.3); border-radius: 2px;"></div>
+                    <div style="width: 12px; height: 12px; background: rgba(34, 197, 94, 0.5); border-radius: 2px;"></div>
+                    <div style="width: 12px; height: 12px; background: rgba(34, 197, 94, 0.7); border-radius: 2px;"></div>
+                    <div style="width: 12px; height: 12px; background: var(--accent-green); border-radius: 2px;"></div>
+                </div>
+                <span>More</span>
+            </div>
+        </div>
+    </main>
+    
+    <script>
+        function stats() {
+            return {
+                summary: {
+                    totalBirds: 0,
+                    totalPhotos: 0,
+                    detectionRate: 0,
+                    peakHour: '—'
+                },
+                dailyData: [],
+                speciesData: [],
+                heatmapData: [],
+                maxHeatmapValue: 1,
+                maxSpeciesCount: 1,
+                dailyChart: null,
+                
+                async init() {
+                    await this.loadData();
+                    this.initCharts();
+                },
+                
+                async loadData() {
+                    try {
+                        // Load daily summary
+                        const dailyRes = await fetch('/api/stats/daily?days=7');
+                        const daily = await dailyRes.json();
+                        if (daily.success) {
+                            this.dailyData = daily.summary.reverse();
+                            
+                            // Calculate totals
+                            this.summary.totalPhotos = this.dailyData.reduce((sum, d) => sum + (d.total_photos || 0), 0);
+                            this.summary.totalBirds = this.dailyData.reduce((sum, d) => sum + (d.total_birds || 0), 0);
+                            
+                            if (this.summary.totalPhotos > 0) {
+                                const photosWithBirds = this.dailyData.reduce((sum, d) => sum + (d.photos_with_birds || 0), 0);
+                                this.summary.detectionRate = Math.round((photosWithBirds / this.summary.totalPhotos) * 100);
+                            }
+                        }
+                        
+                        // Load species stats
+                        const speciesRes = await fetch('/api/stats/species?days=30');
+                        const species = await speciesRes.json();
+                        if (species.success) {
+                            this.speciesData = species.species;
+                            this.maxSpeciesCount = Math.max(...this.speciesData.map(s => s.count), 1);
+                        }
+                        
+                        // Load hourly heatmap
+                        const heatmapRes = await fetch('/api/stats/hourly?days=7');
+                        const heatmap = await heatmapRes.json();
+                        if (heatmap.success) {
+                            this.processHeatmapData(heatmap.heatmap);
+                        }
+                        
+                    } catch (error) {
+                        console.error('Error loading stats:', error);
+                    }
+                },
+                
+                processHeatmapData(rawData) {
+                    // Group by date
+                    const byDate = {};
+                    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                    
+                    rawData.forEach(entry => {
+                        if (!byDate[entry.date]) {
+                            const date = new Date(entry.date);
+                            byDate[entry.date] = {
+                                date: entry.date,
+                                label: dayNames[date.getDay()],
+                                hours: new Array(24).fill(0)
+                            };
+                        }
+                        byDate[entry.date].hours[entry.hour] = entry.total_birds || 0;
+                    });
+                    
+                    this.heatmapData = Object.values(byDate);
+                    
+                    // Calculate max value
+                    let maxVal = 0;
+                    let peakHour = 0;
+                    const hourTotals = new Array(24).fill(0);
+                    
+                    this.heatmapData.forEach(day => {
+                        day.hours.forEach((val, hour) => {
+                            hourTotals[hour] += val;
+                            if (val > maxVal) maxVal = val;
+                        });
+                    });
+                    
+                    this.maxHeatmapValue = Math.max(maxVal, 1);
+                    
+                    // Find peak hour
+                    const maxHourTotal = Math.max(...hourTotals);
+                    peakHour = hourTotals.indexOf(maxHourTotal);
+                    this.summary.peakHour = peakHour.toString().padStart(2, '0') + ':00';
+                },
+                
+                initCharts() {
+                    const ctx = document.getElementById('dailyChart');
+                    if (!ctx) return;
+                    
+                    this.dailyChart = new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: this.dailyData.map(d => {
+                                const date = new Date(d.date);
+                                return date.toLocaleDateString('en', { weekday: 'short', month: 'short', day: 'numeric' });
+                            }),
+                            datasets: [{
+                                label: 'Birds Detected',
+                                data: this.dailyData.map(d => d.total_birds || 0),
+                                backgroundColor: 'rgba(34, 197, 94, 0.8)',
+                                borderColor: '#22c55e',
+                                borderWidth: 1,
+                                borderRadius: 4
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    display: false
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    grid: {
+                                        color: 'rgba(255, 255, 255, 0.05)'
+                                    },
+                                    ticks: {
+                                        color: '#52525b'
+                                    }
+                                },
+                                x: {
+                                    grid: {
+                                        display: false
+                                    },
+                                    ticks: {
+                                        color: '#52525b'
+                                    }
+                                }
+                            }
+                        }
+                    });
+                },
+                
+                getHeatmapColor(value) {
+                    if (value === 0) return 'var(--border-color)';
+                    const intensity = Math.min(value / this.maxHeatmapValue, 1);
+                    const alpha = 0.2 + (intensity * 0.8);
+                    return `rgba(34, 197, 94, ${alpha})`;
+                },
+                
+                getSpeciesPercent(count) {
+                    return Math.round((count / this.maxSpeciesCount) * 100);
+                }
+            };
+        }
+    </script>
+</body>
+</html>

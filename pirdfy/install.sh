@@ -1,0 +1,646 @@
+#!/bin/bash
+#
+# Pirdfy Installation Script
+# Bird Feeder Camera Detector for Raspberry Pi 5
+#
+# Usage:
+#   curl -sSL https://raw.githubusercontent.com/yourusername/pirdfy/main/install.sh | bash
+#
+# Or:
+#   chmod +x install.sh
+#   ./install.sh
+#
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Installation directory
+INSTALL_DIR="/opt/pirdfy"
+SERVICE_NAME="pirdfy"
+REPO_URL="https://github.com/yourusername/pirdfy.git"
+
+# Print functions
+print_header() {
+    echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}  🐦 Pirdfy - Bird Feeder Camera Detector${NC}"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+}
+
+print_step() {
+    echo -e "${GREEN}▶${NC} $1"
+}
+
+print_info() {
+    echo -e "${BLUE}ℹ${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}✖${NC} $1"
+}
+
+print_success() {
+    echo -e "${GREEN}✓${NC} $1"
+}
+
+# Check if running as root
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        print_error "This script must be run as root (use sudo)"
+        exit 1
+    fi
+}
+
+# Check system requirements
+check_requirements() {
+    print_step "Checking system requirements..."
+    
+    # Check if Raspberry Pi
+    if ! grep -q "Raspberry Pi" /proc/cpuinfo 2>/dev/null; then
+        print_warning "This doesn't appear to be a Raspberry Pi. Continuing anyway..."
+    fi
+    
+    # Check Python version
+    if command -v python3 &> /dev/null; then
+        PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
+        print_info "Python version: $PYTHON_VERSION"
+        
+        # Check if Python 3.9+
+        if python3 -c 'import sys; exit(0 if sys.version_info >= (3, 9) else 1)'; then
+            print_success "Python version OK"
+        else
+            print_error "Python 3.9 or higher is required"
+            exit 1
+        fi
+    else
+        print_error "Python 3 is not installed"
+        exit 1
+    fi
+    
+    # Check available memory
+    TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}')
+    if [[ $TOTAL_MEM -lt 2048 ]]; then
+        print_warning "System has less than 2GB RAM. Performance may be limited."
+    fi
+    
+    # Check available disk space
+    AVAIL_SPACE=$(df -BG /opt | awk 'NR==2{print $4}' | sed 's/G//')
+    if [[ $AVAIL_SPACE -lt 5 ]]; then
+        print_warning "Less than 5GB free space available. Consider freeing up disk space."
+    fi
+}
+
+# Install system dependencies
+install_dependencies() {
+    print_step "Installing system dependencies..."
+    
+    apt-get update
+    
+    # Core build tools and libraries
+    apt-get install -y \
+        python3-pip \
+        python3-venv \
+        python3-dev \
+        python3-numpy \
+        python3-opencv \
+        build-essential \
+        cmake \
+        git \
+        curl \
+        wget
+    
+    # Camera libraries (libcamera for Raspberry Pi Camera)
+    apt-get install -y \
+        libcamera-dev \
+        libcamera-apps \
+        libcap-dev
+    
+    # Image processing libraries
+    apt-get install -y \
+        libjpeg-dev \
+        libpng-dev \
+        libtiff-dev \
+        libwebp-dev
+    
+    # Math/ML libraries
+    apt-get install -y \
+        libatlas-base-dev \
+        libopenblas-dev \
+        libhdf5-dev \
+        liblapack-dev
+    
+    # Video encoding
+    apt-get install -y \
+        ffmpeg \
+        v4l-utils
+    
+    print_success "System dependencies installed"
+}
+
+# Install picamera2 and camera dependencies
+install_picamera2_deps() {
+    print_step "Installing Raspberry Pi Camera dependencies..."
+    
+    # Core picamera2 and libcamera packages
+    apt-get install -y \
+        python3-picamera2 \
+        python3-libcamera \
+        python3-kms++ \
+        python3-prctl \
+        python3-pyqt5 \
+        python3-pil
+    
+    # Additional libcamera tools and dependencies
+    apt-get install -y \
+        libcamera-tools \
+        rpicam-apps || apt-get install -y libcamera-apps
+    
+    # Enable legacy camera support (may be needed for some setups)
+    if command -v raspi-config &> /dev/null; then
+        print_info "Configuring camera interface..."
+        # Enable camera interface
+        raspi-config nonint do_camera 0 2>/dev/null || true
+        # Disable legacy camera (use libcamera instead)
+        raspi-config nonint do_legacy 1 2>/dev/null || true
+    fi
+    
+    # Add user to video group for camera access
+    if id "pi" &>/dev/null; then
+        usermod -aG video pi
+    fi
+    
+    # Test if camera is detected
+    print_info "Testing camera detection..."
+    if command -v rpicam-hello &> /dev/null; then
+        rpicam-hello --list-cameras 2>/dev/null || print_warning "No cameras detected yet (may need reboot)"
+    elif command -v libcamera-hello &> /dev/null; then
+        libcamera-hello --list-cameras 2>/dev/null || print_warning "No cameras detected yet (may need reboot)"
+    fi
+    
+    print_success "Camera dependencies installed"
+}
+
+# Create installation directory and clone/copy files
+setup_installation() {
+    print_step "Setting up installation directory..."
+    
+    # Create directory
+    mkdir -p "$INSTALL_DIR"
+    
+    # Get script directory
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    
+    # If running from git repo or local directory, copy files
+    if [[ -f "$SCRIPT_DIR/requirements.txt" ]]; then
+        print_info "Installing from local files..."
+        
+        # Copy all project files
+        cp -r "$SCRIPT_DIR"/* "$INSTALL_DIR/" 2>/dev/null || true
+        
+        # Make sure config directory exists and has config
+        mkdir -p "$INSTALL_DIR/config"
+        if [[ -f "$SCRIPT_DIR/config/config.yaml" ]]; then
+            cp "$SCRIPT_DIR/config/config.yaml" "$INSTALL_DIR/config/"
+        fi
+        
+        # Remove any Windows line endings
+        if command -v dos2unix &> /dev/null; then
+            find "$INSTALL_DIR" -name "*.py" -exec dos2unix {} \; 2>/dev/null
+            find "$INSTALL_DIR" -name "*.yaml" -exec dos2unix {} \; 2>/dev/null
+            find "$INSTALL_DIR" -name "*.sh" -exec dos2unix {} \; 2>/dev/null
+        fi
+    else
+        # Clone from repository
+        print_info "Cloning from repository..."
+        if [[ -d "$INSTALL_DIR/.git" ]]; then
+            cd "$INSTALL_DIR"
+            git pull
+        else
+            rm -rf "$INSTALL_DIR"
+            git clone "$REPO_URL" "$INSTALL_DIR"
+        fi
+    fi
+    
+    # Ensure main.py is executable
+    chmod +x "$INSTALL_DIR/src/main.py" 2>/dev/null || true
+    
+    print_success "Installation directory set up"
+}
+
+# Create Python virtual environment
+create_venv() {
+    print_step "Creating Python virtual environment..."
+    
+    cd "$INSTALL_DIR"
+    
+    # Remove existing venv if present
+    if [[ -d "venv" ]]; then
+        print_info "Removing existing virtual environment..."
+        rm -rf venv
+    fi
+    
+    # Create venv with system site packages (required for picamera2)
+    # picamera2 is installed via apt and needs system libraries
+    print_info "Creating virtual environment with system packages..."
+    python3 -m venv --system-site-packages venv
+    
+    # Activate virtual environment
+    source venv/bin/activate
+    
+    # Upgrade pip and core tools
+    print_info "Upgrading pip and setuptools..."
+    pip install --upgrade pip wheel setuptools
+    
+    # Install requirements (picamera2 comes from system)
+    print_info "Installing Python packages (this may take several minutes on Raspberry Pi)..."
+    pip install --no-cache-dir -r requirements.txt
+    
+    # Verify picamera2 is available
+    print_info "Verifying picamera2 installation..."
+    if python3 -c "import picamera2; print(f'picamera2 version: {picamera2.__version__}')" 2>/dev/null; then
+        print_success "picamera2 is available"
+    else
+        print_warning "picamera2 not found - camera features may not work"
+        print_info "Try: sudo apt install python3-picamera2"
+    fi
+    
+    # Verify other key packages
+    python3 -c "import cv2; print(f'OpenCV version: {cv2.__version__}')" 2>/dev/null || print_warning "OpenCV not fully installed"
+    python3 -c "import flask; print(f'Flask version: {flask.__version__}')" 2>/dev/null || print_error "Flask not installed"
+    
+    print_success "Python environment created"
+}
+
+# Download YOLO model
+download_model() {
+    print_step "Downloading bird detection model..."
+    
+    cd "$INSTALL_DIR"
+    source venv/bin/activate
+    
+    # Download YOLOv8n model
+    python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+    
+    print_success "Detection model downloaded"
+}
+
+# Create data directories with proper permissions
+create_directories() {
+    print_step "Creating data directories..."
+    
+    # Create all required directories
+    mkdir -p "$INSTALL_DIR/data/photos"
+    mkdir -p "$INSTALL_DIR/data/birds"
+    mkdir -p "$INSTALL_DIR/data/videos"
+    mkdir -p "$INSTALL_DIR/data/annotated"
+    mkdir -p "$INSTALL_DIR/logs"
+    mkdir -p "$INSTALL_DIR/models"
+    mkdir -p "$INSTALL_DIR/config"
+    
+    # Set ownership - use root for service, but allow video group access
+    chown -R root:video "$INSTALL_DIR"
+    
+    # Base directory permissions
+    chmod 755 "$INSTALL_DIR"
+    chmod -R 755 "$INSTALL_DIR/src"
+    chmod -R 755 "$INSTALL_DIR/config"
+    
+    # Data directories - writable by service
+    chmod 755 "$INSTALL_DIR/data"
+    chmod 755 "$INSTALL_DIR/data/photos"
+    chmod 755 "$INSTALL_DIR/data/birds"
+    chmod 755 "$INSTALL_DIR/data/videos"
+    chmod 755 "$INSTALL_DIR/data/annotated"
+    
+    # Logs directory - writable by service, readable by group
+    chmod 755 "$INSTALL_DIR/logs"
+    
+    # Models directory
+    chmod 755 "$INSTALL_DIR/models"
+    
+    # Ensure service can write to data and logs
+    chown -R root:video "$INSTALL_DIR/data"
+    chown -R root:video "$INSTALL_DIR/logs"
+    
+    # Create empty log file with correct permissions
+    touch "$INSTALL_DIR/logs/pirdfy.log"
+    chmod 644 "$INSTALL_DIR/logs/pirdfy.log"
+    chown root:video "$INSTALL_DIR/logs/pirdfy.log"
+    
+    touch "$INSTALL_DIR/logs/service.log"
+    chmod 644 "$INSTALL_DIR/logs/service.log"
+    chown root:video "$INSTALL_DIR/logs/service.log"
+    
+    print_success "Directories created with correct permissions"
+}
+
+# Create systemd service
+create_service() {
+    print_step "Creating systemd service..."
+    
+    cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
+[Unit]
+Description=Pirdfy Bird Feeder Camera Detector
+After=network.target multi-user.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=video
+WorkingDirectory=${INSTALL_DIR}
+
+# Environment
+Environment=PATH=${INSTALL_DIR}/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/root
+
+# Start command
+ExecStart=${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/src/main.py --config ${INSTALL_DIR}/config/config.yaml
+
+# Restart policy
+Restart=always
+RestartSec=10
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+# Allow camera and hardware access
+SupplementaryGroups=video gpio i2c spi
+
+# Device access for camera
+DeviceAllow=/dev/video* rw
+DeviceAllow=/dev/vchiq rw
+DeviceAllow=/dev/dma_heap/* rw
+
+# Security settings (allow camera access)
+PrivateTmp=false
+ProtectSystem=false
+ReadWritePaths=${INSTALL_DIR}/data ${INSTALL_DIR}/logs
+
+# Logging - redirect to files
+StandardOutput=append:${INSTALL_DIR}/logs/service.log
+StandardError=append:${INSTALL_DIR}/logs/service.log
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Reload systemd
+    systemctl daemon-reload
+    
+    # Enable service to start on boot
+    systemctl enable ${SERVICE_NAME}
+    
+    print_success "Systemd service created and enabled"
+}
+
+# Create convenience scripts
+create_scripts() {
+    print_step "Creating convenience scripts..."
+    
+    # Start script
+    cat > /usr/local/bin/pirdfy-start << 'EOF'
+#!/bin/bash
+sudo systemctl start pirdfy
+echo "Pirdfy started. Dashboard available at http://$(hostname -I | awk '{print $1}'):8080"
+EOF
+    chmod +x /usr/local/bin/pirdfy-start
+    
+    # Stop script
+    cat > /usr/local/bin/pirdfy-stop << 'EOF'
+#!/bin/bash
+sudo systemctl stop pirdfy
+echo "Pirdfy stopped."
+EOF
+    chmod +x /usr/local/bin/pirdfy-stop
+    
+    # Status script
+    cat > /usr/local/bin/pirdfy-status << 'EOF'
+#!/bin/bash
+sudo systemctl status pirdfy
+EOF
+    chmod +x /usr/local/bin/pirdfy-status
+    
+    # Logs script
+    cat > /usr/local/bin/pirdfy-logs << 'EOF'
+#!/bin/bash
+sudo journalctl -u pirdfy -f
+EOF
+    chmod +x /usr/local/bin/pirdfy-logs
+    
+    # Update script
+    cat > /usr/local/bin/pirdfy-update << 'EOF'
+#!/bin/bash
+cd /opt/pirdfy
+sudo systemctl stop pirdfy
+git pull
+source venv/bin/activate
+pip install -r requirements.txt
+sudo systemctl start pirdfy
+echo "Pirdfy updated and restarted."
+EOF
+    chmod +x /usr/local/bin/pirdfy-update
+    
+    # Fix permissions script
+    cat > /usr/local/bin/pirdfy-fix-permissions << 'EOF'
+#!/bin/bash
+# Fix permissions for Pirdfy data and log directories
+INSTALL_DIR="/opt/pirdfy"
+
+sudo chown -R root:video "$INSTALL_DIR/data"
+sudo chown -R root:video "$INSTALL_DIR/logs"
+sudo chmod 755 "$INSTALL_DIR/data"
+sudo chmod -R 755 "$INSTALL_DIR/data/photos"
+sudo chmod -R 755 "$INSTALL_DIR/data/birds"
+sudo chmod -R 755 "$INSTALL_DIR/data/videos"
+sudo chmod -R 755 "$INSTALL_DIR/data/annotated"
+sudo chmod 755 "$INSTALL_DIR/logs"
+sudo chmod 644 "$INSTALL_DIR/logs/"*.log 2>/dev/null
+
+echo "Permissions fixed."
+EOF
+    chmod +x /usr/local/bin/pirdfy-fix-permissions
+    
+    # Test camera script
+    cat > /usr/local/bin/pirdfy-test-camera << 'EOF'
+#!/bin/bash
+echo "Testing Raspberry Pi camera..."
+if command -v rpicam-hello &> /dev/null; then
+    rpicam-hello --list-cameras
+    echo ""
+    echo "Taking test photo..."
+    rpicam-jpeg -o /tmp/pirdfy-test.jpg -t 1000
+    if [[ -f /tmp/pirdfy-test.jpg ]]; then
+        echo "✓ Test photo saved to /tmp/pirdfy-test.jpg"
+        rm /tmp/pirdfy-test.jpg
+    fi
+elif command -v libcamera-hello &> /dev/null; then
+    libcamera-hello --list-cameras
+    echo ""
+    echo "Taking test photo..."
+    libcamera-jpeg -o /tmp/pirdfy-test.jpg -t 1000
+    if [[ -f /tmp/pirdfy-test.jpg ]]; then
+        echo "✓ Test photo saved to /tmp/pirdfy-test.jpg"
+        rm /tmp/pirdfy-test.jpg
+    fi
+else
+    echo "Camera tools not found. Install with: sudo apt install rpicam-apps"
+fi
+EOF
+    chmod +x /usr/local/bin/pirdfy-test-camera
+    
+    print_success "Convenience scripts created"
+}
+
+# Configure hostname (optional)
+configure_hostname() {
+    print_step "Configuring hostname..."
+    
+    read -p "Set hostname to 'pirdfy'? (y/N): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        hostnamectl set-hostname pirdfy
+        
+        # Update /etc/hosts
+        sed -i 's/127.0.1.1.*/127.0.1.1\tpirdfy/' /etc/hosts
+        
+        print_success "Hostname set to 'pirdfy'"
+    else
+        print_info "Hostname unchanged"
+    fi
+}
+
+# Verify installation
+verify_installation() {
+    print_step "Verifying installation..."
+    
+    local errors=0
+    
+    # Check directories exist and are writable
+    for dir in data/photos data/birds data/videos data/annotated logs; do
+        if [[ -d "$INSTALL_DIR/$dir" ]] && [[ -w "$INSTALL_DIR/$dir" ]]; then
+            print_success "Directory $dir is writable"
+        else
+            print_error "Directory $dir is not writable"
+            ((errors++))
+        fi
+    done
+    
+    # Check log file is writable
+    if touch "$INSTALL_DIR/logs/test.log" 2>/dev/null; then
+        rm -f "$INSTALL_DIR/logs/test.log"
+        print_success "Log directory is writable"
+    else
+        print_error "Cannot write to log directory"
+        ((errors++))
+    fi
+    
+    # Check config file exists
+    if [[ -f "$INSTALL_DIR/config/config.yaml" ]]; then
+        print_success "Configuration file exists"
+    else
+        print_error "Configuration file missing"
+        ((errors++))
+    fi
+    
+    # Check virtual environment
+    if [[ -f "$INSTALL_DIR/venv/bin/python" ]]; then
+        print_success "Virtual environment exists"
+    else
+        print_error "Virtual environment not found"
+        ((errors++))
+    fi
+    
+    # Check systemd service
+    if systemctl is-enabled ${SERVICE_NAME} &>/dev/null; then
+        print_success "Systemd service is enabled"
+    else
+        print_error "Systemd service not enabled"
+        ((errors++))
+    fi
+    
+    # Check video group membership
+    if groups | grep -q video; then
+        print_success "Current user in video group"
+    else
+        print_warning "Current user not in video group"
+    fi
+    
+    if [[ $errors -gt 0 ]]; then
+        print_warning "Installation completed with $errors warning(s)"
+    else
+        print_success "All verification checks passed"
+    fi
+}
+
+# Print final instructions
+print_instructions() {
+    IP_ADDR=$(hostname -I | awk '{print $1}')
+    
+    echo -e "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}  ✓ Pirdfy Installation Complete!${NC}"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+    
+    echo -e "${BLUE}📍 Installation Directory:${NC} $INSTALL_DIR"
+    echo -e "${BLUE}📊 Dashboard URL:${NC} http://${IP_ADDR}:8080"
+    echo -e "${BLUE}📄 Configuration:${NC} $INSTALL_DIR/config/config.yaml\n"
+    
+    echo -e "${YELLOW}Quick Commands:${NC}"
+    echo -e "  pirdfy-start           - Start the service"
+    echo -e "  pirdfy-stop            - Stop the service"
+    echo -e "  pirdfy-status          - Check service status"
+    echo -e "  pirdfy-logs            - View live logs"
+    echo -e "  pirdfy-update          - Update to latest version"
+    echo -e "  pirdfy-test-camera     - Test camera connectivity"
+    echo -e "  pirdfy-fix-permissions - Fix file permissions\n"
+    
+    echo -e "${YELLOW}Manual Control:${NC}"
+    echo -e "  sudo systemctl start pirdfy"
+    echo -e "  sudo systemctl stop pirdfy"
+    echo -e "  sudo systemctl restart pirdfy\n"
+    
+    read -p "Start Pirdfy now? (Y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        systemctl start ${SERVICE_NAME}
+        print_success "Pirdfy is now running!"
+        echo -e "\n${GREEN}Open your browser and go to: http://${IP_ADDR}:8080${NC}\n"
+    else
+        print_info "Run 'pirdfy-start' when ready to start the service"
+    fi
+}
+
+# Main installation flow
+main() {
+    print_header
+    
+    check_root
+    check_requirements
+    install_dependencies
+    install_picamera2_deps
+    setup_installation
+    create_directories
+    create_venv
+    download_model
+    create_service
+    create_scripts
+    verify_installation
+    configure_hostname
+    print_instructions
+}
+
+# Run main
+main "$@"
