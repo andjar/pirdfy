@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 def create_app(config: dict, camera_manager=None, detector=None, pipeline=None,
-               video_recorder=None, system_monitor=None, database=None):
+               video_recorder=None, system_monitor=None, notification_manager=None,
+               database=None):
     """
     Create and configure the Flask application.
     """
@@ -49,6 +50,7 @@ def create_app(config: dict, camera_manager=None, detector=None, pipeline=None,
     app.pipeline = pipeline
     app.video_recorder = video_recorder
     app.system_monitor = system_monitor
+    app.notification_manager = notification_manager
     app.database = database
     app.config_data = config
     
@@ -348,6 +350,33 @@ def create_app(config: dict, camera_manager=None, detector=None, pipeline=None,
             camera_manager.stop_continuous_capture()
             return jsonify({"success": True, "message": "Capture stopped"})
         return jsonify({"success": False, "error": "Camera not available"}), 400
+    
+    # --- Notifications ---
+    @app.route("/api/notifications/status")
+    def api_notification_status():
+        """Get notification status."""
+        if notification_manager:
+            return jsonify({
+                "success": True,
+                "enabled": notification_manager.enabled,
+                "configured": notification_manager.apprise is not None,
+                "cooldown_seconds": notification_manager.cooldown_seconds
+            })
+        return jsonify({
+            "success": True,
+            "enabled": False,
+            "configured": False
+        })
+    
+    @app.route("/api/notifications/test", methods=["POST"])
+    def api_test_notification():
+        """Send a test notification."""
+        if notification_manager and notification_manager.enabled:
+            success = notification_manager.send_test_notification()
+            if success:
+                return jsonify({"success": True, "message": "Test notification sent"})
+            return jsonify({"success": False, "error": "Failed to send notification"}), 500
+        return jsonify({"success": False, "error": "Notifications not enabled"}), 400
     
     # ================== WebSocket Events ==================
     

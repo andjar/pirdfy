@@ -24,6 +24,7 @@ from camera import CameraManager
 from detector import BirdDetector, DetectionPipeline
 from recorder import VideoRecorder, create_bird_detection_handler
 from battery import SystemMonitor
+from notifications import NotificationManager, BirdNotification
 from web.app import create_app, run_server
 
 
@@ -97,6 +98,7 @@ class Pirdfy:
         self.pipeline = None
         self.video_recorder = None
         self.system_monitor = None
+        self.notification_manager = None
         self.web_app = None
         self.socketio = None
         
@@ -174,6 +176,13 @@ class Pirdfy:
             )
             self.logger.info("System monitor initialized")
             
+            # Notification Manager
+            self.notification_manager = NotificationManager(self.config)
+            if self.notification_manager.initialize():
+                self.logger.info("Notification manager initialized")
+            else:
+                self.logger.info("Notifications disabled or not configured")
+            
             # Web Application
             self.web_app, self.socketio = create_app(
                 self.config,
@@ -182,6 +191,7 @@ class Pirdfy:
                 pipeline=self.pipeline,
                 video_recorder=self.video_recorder,
                 system_monitor=self.system_monitor,
+                notification_manager=self.notification_manager,
                 database=self.database
             )
             self.logger.info("Web application initialized")
@@ -234,6 +244,24 @@ class Pirdfy:
             if self.pipeline and self.video_recorder:
                 bird_handler = create_bird_detection_handler(self.video_recorder)
                 self.pipeline.add_bird_detected_callback(bird_handler)
+            
+            # Bird detection -> Push notifications
+            if self.pipeline and self.notification_manager and self.notification_manager.enabled:
+                def on_bird_detected_notify(detection_result):
+                    """Send push notification when bird is detected."""
+                    if detection_result.detections:
+                        # Use the first (best) detection
+                        det = detection_result.detections[0]
+                        notification = BirdNotification(
+                            timestamp=detection_result.timestamp,
+                            camera_id=detection_result.camera_id,
+                            confidence=float(det.confidence),
+                            image_path=det.cropped_path,
+                            species=None  # Future: bird ID
+                        )
+                        self.notification_manager.notify_bird_detected(notification)
+                
+                self.pipeline.add_bird_detected_callback(on_bird_detected_notify)
         
         # Video recording events
         if self.web_app:
@@ -374,6 +402,9 @@ class Pirdfy:
         
         if self.detector:
             self.detector.close()
+        
+        if self.notification_manager:
+            self.notification_manager.close()
         
         self.logger.info("Pirdfy stopped")
 

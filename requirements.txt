@@ -33,3 +33,6 @@ eventlet>=0.34.0
 # Utilities
 python-dateutil>=2.8.0
 requests>=2.31.0
+
+# Push Notifications
+apprise>=1.6.0

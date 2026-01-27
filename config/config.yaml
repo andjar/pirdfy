@@ -124,6 +124,33 @@ logging:
   # Number of backup log files to keep
   backup_count: 5
 
+# Push Notifications (using Apprise)
+# Supports Pushover, Telegram, Discord, Slack, and many more
+# See: https://github.com/caronc/apprise/wiki
+notifications:
+  # Enable push notifications
+  enabled: false
+  
+  # Notification URLs (Apprise format)
+  # Pushover example: pover://user_key@api_token
+  # Telegram example: tgram://bot_token/chat_id
+  # See Apprise wiki for all supported services
+  urls: []
+    # - "pover://YOUR_USER_KEY@YOUR_API_TOKEN"
+  
+  # Cooldown between notifications (seconds) - avoid notification spam
+  cooldown_seconds: 60
+  
+  # Attach bird image to notification (if supported by service)
+  attach_images: true
+  
+  # Notification title (supports {species} placeholder for future bird ID)
+  title: "Bird Detected! 🐦"
+  
+  # Notification body template
+  # Available placeholders: {time}, {confidence}, {camera}, {species}
+  body: "A bird was detected at {time} (confidence: {confidence:.0%})"
+
 # System Settings
 system:
   # Enable battery monitoring (for portable setups)
