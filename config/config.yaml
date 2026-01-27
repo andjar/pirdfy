@@ -105,6 +105,10 @@ storage:
   
   # Days to keep videos (0 = forever)
   video_retention_days: 7
+  
+  # Cleanup interval for photos without birds (minutes)
+  # Photos without birds are deleted periodically to save disk space
+  cleanup_interval_minutes: 5
 
 # Logging Settings
 logging:

@@ -102,6 +102,7 @@ class Pirdfy:
         
         self._running = False
         self._shutdown_event = threading.Event()
+        self._cleanup_thread = None
     
     def _setup_directories(self):
         """Create required data directories."""
@@ -261,6 +262,51 @@ class Pirdfy:
         
         self.system_monitor.add_low_battery_callback(on_low_battery)
     
+    def _cleanup_empty_photos(self):
+        """Delete photos without birds to save disk space."""
+        data_path = Path(self.config.get("storage", {}).get("data_path", "data"))
+        photos_path = data_path / "photos"
+        
+        try:
+            # Get photos without birds from database
+            photos_to_delete = self.database.get_recent_photos(limit=10000, with_birds_only=False)
+            
+            deleted_count = 0
+            for photo in photos_to_delete:
+                # Skip photos with birds
+                if photo.get('has_birds'):
+                    continue
+                
+                filepath = photos_path / photo.get('filename', '')
+                if filepath.exists():
+                    try:
+                        filepath.unlink()
+                        deleted_count += 1
+                    except Exception as e:
+                        self.logger.warning(f"Failed to delete {filepath}: {e}")
+            
+            if deleted_count > 0:
+                self.logger.info(f"Cleanup: deleted {deleted_count} photos without birds")
+                
+        except Exception as e:
+            self.logger.error(f"Cleanup error: {e}")
+    
+    def _cleanup_loop(self):
+        """Background thread that periodically cleans up photos without birds."""
+        cleanup_interval = self.config.get("storage", {}).get("cleanup_interval_minutes", 5) * 60
+        
+        self.logger.info(f"Cleanup thread started (interval: {cleanup_interval}s)")
+        
+        while self._running:
+            # Wait for interval or shutdown
+            if self._shutdown_event.wait(timeout=cleanup_interval):
+                break  # Shutdown requested
+            
+            if self._running:
+                self._cleanup_empty_photos()
+        
+        self.logger.info("Cleanup thread stopped")
+    
     def start(self):
         """Start all services."""
         self.logger.info("Starting Pirdfy services...")
@@ -281,6 +327,10 @@ class Pirdfy:
                 self.logger.info("Camera capture started")
             else:
                 self.logger.warning("No cameras available - capture disabled")
+            
+            # Start cleanup thread (deletes photos without birds every 5 minutes)
+            self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
+            self._cleanup_thread.start()
             
             # Start web server (blocking)
             web_config = self.config.get("web", {})
@@ -305,7 +355,13 @@ class Pirdfy:
         self.logger.info("Stopping Pirdfy services...")
         self._running = False
         
+        # Signal cleanup thread to stop
+        self._shutdown_event.set()
+        
         # Stop in reverse order of startup
+        if self._cleanup_thread and self._cleanup_thread.is_alive():
+            self._cleanup_thread.join(timeout=5)
+        
         if self.camera_manager:
             self.camera_manager.stop_continuous_capture()
             self.camera_manager.close()
@@ -319,7 +375,6 @@ class Pirdfy:
         if self.detector:
             self.detector.close()
         
-        self._shutdown_event.set()
         self.logger.info("Pirdfy stopped")
 
 
