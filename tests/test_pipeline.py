@@ -148,3 +148,88 @@ def test_camera_failure_recovers(paths):
         time.sleep(0.1)
     w.stop()
     assert len(attempts) >= 2 and w.error is None
+
+
+def test_preroll_clip_starts_before_detection_and_waits_for_lag(paths):
+    store = ConfigStore(paths.config)
+    store.update({"capture": {"visit_gap": 30, "motion": {"enabled": False}},
+                  "video": {"clip_seconds": 5, "max_clip_seconds": 60, "preroll_seconds": 5}})
+    db = Database(paths.db)
+    bus = EventBus()
+    det = FakeDetector()
+    clock = FakeClock()
+    w = CameraWorker(store.settings.cameras[0], store=store, db=db,
+                     media=MediaStore(paths.media, db, bus, store.settings.storage), detector=det,
+                     notifier=Notifier(store.settings.notifications, paths.tmp), bus=bus,
+                     backend_factory=lambda s: FakeBackend(s, clock), clock=clock)
+    w._open()
+    assert w.backend.preroll_active == 5 and w.status()["preroll"] == 5
+
+    def frame(dets):
+        clock.t += 1
+        det.script.append(dets)
+        w.step()
+
+    frame([bird()])
+    t_detect = clock.t
+    assert w.clip.started_at == t_detect - 5
+    for _ in range(5):
+        frame([bird()])
+    # Bird left; without pre-roll the clip would stop after 3 quiet seconds,
+    # but the file lags by 5 s, so it must keep going for 3 + 5.
+    for _ in range(7):
+        frame([])
+    assert w.clip is not None
+    frame([])
+    frame([])
+    assert w.clip is None
+    video = db.visit_videos(w.visit.id)[0]
+    assert video["started_at"] == t_detect - 5
+
+
+def test_preroll_off_when_video_disabled(paths):
+    store = ConfigStore(paths.config)
+    store.update({"video": {"enabled": False, "preroll_seconds": 5}})
+    db = Database(paths.db)
+    bus = EventBus()
+    w = CameraWorker(store.settings.cameras[0], store=store, db=db,
+                     media=MediaStore(paths.media, db, bus, store.settings.storage), detector=FakeDetector(),
+                     notifier=Notifier(store.settings.notifications, paths.tmp), bus=bus,
+                     backend_factory=lambda s: FakeBackend(s))
+    w._open()
+    assert w.backend.preroll_active == 0
+
+
+def test_restart_needed_only_for_relevant_video_changes():
+    from pirdfy.app import Pirdfy
+    from pirdfy.config import VideoSettings
+
+    need = Pirdfy._video_restart_needed
+    off, on = VideoSettings(), VideoSettings(preroll_seconds=4)
+    assert need(off, on) and need(on, off)
+    assert not need(off, VideoSettings(bitrate=3_000_000))          # encoder starts per clip anyway
+    assert need(on, VideoSettings(preroll_seconds=4, bitrate=3_000_000))
+    assert not need(on, VideoSettings(preroll_seconds=4, cooldown=99))
+    assert need(on, VideoSettings(preroll_seconds=4, enabled=False))
+
+
+def test_mock_backend_writes_buffered_frames(tmp_path):
+    import cv2
+
+    from pirdfy.camera import MockBackend
+    from pirdfy.config import CameraSettings
+
+    b = MockBackend(CameraSettings(resolution=(640, 360)))
+    b.configure_video(2, 1_000_000, 1)
+    b.open()
+    for _ in range(6):
+        with b.capture():
+            pass
+    path = tmp_path / "clip.mp4"
+    b.start_clip(path, 1_000_000)
+    for _ in range(3):
+        with b.capture():
+            pass
+    b.stop_clip()
+    n = int(cv2.VideoCapture(str(path)).get(cv2.CAP_PROP_FRAME_COUNT))
+    assert n == 9  # 6 buffered (all within 2 s) + 3 live

@@ -58,6 +58,29 @@ Each update backs up the database, installs the new code and packages, restarts,
 `/healthz`. If the new version does not come up, the previous version, Python environment and
 database are restored automatically.
 
+## Catching the arrival (pre-roll)
+
+By default a clip starts when a bird is detected, so the landing is usually missed. With
+**Settings → Video → Include the arrival** (or `video.preroll_seconds`, 1–10 s) the camera keeps the
+last few seconds of video in memory and every clip starts that much earlier.
+
+The Pi 5 has no hardware video encoder, so this means software H.264 encoding all day, even when
+no bird is there. It is off by default. Measure what it costs on your Pi first:
+
+```bash
+sudo pirdfy bench               # ~5 minutes; stops and restarts Pirdfy
+sudo pirdfy bench --seconds 300 # longer phases give a more honest temperature
+```
+
+The bench compares CPU use, temperature, throttling and detection speed with and without
+pre-roll, records a test clip to check that the arrival is in it, and recommends whether to turn
+it on. Encoding cost scales with pixels per second, so 15 fps or 1280×720 should cost about half
+(run the bench again to confirm). The live view shows
+"N s pre-roll" while it is active, and *Pi health* shows Pirdfy's own CPU use.
+
+Clips are written as fragmented MP4, so a clip that is cut off (power cut, crash) still plays up to
+that point.
+
 ## Everyday commands
 
 ```text
@@ -67,6 +90,7 @@ pirdfy doctor      check camera, model, service, power supply and disk
 pirdfy passwd      change the dashboard password
 pirdfy config      edit settings in a text editor, validate, restart
 pirdfy camera      list connected cameras
+pirdfy bench       measure the cost of video pre-roll on this Pi
 pirdfy restart | stop | start
 ```
 

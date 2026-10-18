@@ -41,6 +41,7 @@ Usage: pirdfy <command>
   camera        List connected cameras
   doctor        Check that everything is working
   model         Download or rebuild the detection model
+  bench         Measure what video pre-roll costs on this Pi (takes ~5 minutes)
   url           Show the dashboard address
   version       Show the installed version
   uninstall     Remove Pirdfy (keeps photos and settings unless --purge)
@@ -77,6 +78,11 @@ case "$cmd" in
     if command -v rpicam-hello >/dev/null; then rpicam-hello --list-cameras
     else echo "rpicam-apps is not installed (sudo apt install rpicam-apps)"; fi ;;
   doctor|model|uninstall) run_as_root bash "$APP/install.sh" "$cmd" "$@" ;;
+  bench)
+    echo "Stopping Pirdfy for the benchmark (the camera can only be used by one program)..."
+    run_as_root systemctl stop "$UNIT"
+    trap 'echo; echo "Starting Pirdfy again..."; run_as_root systemctl start "$UNIT"' EXIT
+    py bench "$@" ;;
   url) url ;;
   version) py version ;;
   help|-h|--help) usage ;;

@@ -8,6 +8,10 @@ Video is encoded from ``main`` with ``start_encoder``/``stop_encoder`` while the
 camera keeps streaming, so analysis never stops during a recording. On the Pi 5
 picamera2's H264Encoder is libav (software) H.264, muxed straight to MP4.
 
+Optional pre-roll: the encoder runs all the time into an in-memory ring buffer
+(``CircularOutput2``); starting a clip writes the buffered seconds first, so the
+bird's arrival is included. The output is time-shifted by the buffer length.
+
 All arrays handed to the rest of the app are RGB (uint8, HxWx3).
 """
 
@@ -18,6 +22,7 @@ import os
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -79,6 +84,17 @@ class CameraBackend(ABC):
         self.settings = settings
         self.recording = False
         self.model = "unknown"
+        # Video settings, set by the worker before open().
+        self.preroll_requested = 0
+        self.preroll_active = 0       # what is actually buffering (0 if unavailable)
+        self.preroll_error: str | None = None
+        self.bitrate = 6_000_000
+        self.encoder_threads = 2
+
+    def configure_video(self, preroll_seconds: int, bitrate: int, threads: int) -> None:
+        self.preroll_requested = preroll_seconds
+        self.bitrate = bitrate
+        self.encoder_threads = threads
 
     @abstractmethod
     def open(self) -> None: ...
@@ -106,6 +122,7 @@ class Picamera2Backend(CameraBackend):
         super().__init__(settings)
         self.cam = None
         self._encoder = None
+        self._ring = None  # CircularOutput2 when pre-roll is on
         self._lock = threading.Lock()
 
     def open(self) -> None:
@@ -135,24 +152,67 @@ class Picamera2Backend(CameraBackend):
             self._lores_size = config["lores"]["size"]
             self.apply_controls(s)
             cam.start()
+            if self.preroll_requested:
+                self._start_ring()
         except Exception:
             cam.close()
             self.cam = None
             raise
-        log.info("Camera %d (%s) started: main %s lores %s @ %d fps", s.id, self.model,
-                 self._main_size, self._lores_size, s.fps)
+        log.info("Camera %d (%s) started: main %s lores %s @ %d fps%s", s.id, self.model,
+                 self._main_size, self._lores_size, s.fps,
+                 f", {self.preroll_active} s pre-roll" if self.preroll_active else "")
+
+    def _make_encoder(self, bitrate: int, threads: int | None = None):
+        from picamera2.encoders import H264Encoder
+
+        enc = H264Encoder(bitrate=bitrate)
+        if threads and hasattr(enc, "threads"):  # libav encoder (Pi 5): limit CPU use
+            enc.threads = threads
+        return enc
+
+    @staticmethod
+    def _mp4_output(path: Path):
+        try:
+            from picamera2.outputs import PyavOutput
+
+            # Fragmented MP4 stays playable even if recording is cut off (crash, power loss).
+            return PyavOutput(str(path), format="mp4",
+                              options={"movflags": "frag_keyframe+empty_moov+default_base_moof"})
+        except ImportError:  # older picamera2
+            from picamera2.outputs import FfmpegOutput
+
+            return FfmpegOutput(str(path))
+
+    def _start_ring(self) -> None:
+        try:
+            from picamera2.outputs import CircularOutput2, PyavOutput  # noqa: F401
+        except ImportError:
+            self.preroll_error = "Pre-roll needs a newer picamera2 (run: sudo apt full-upgrade)"
+            log.warning(self.preroll_error)
+            return
+        ring = CircularOutput2(buffer_duration_ms=self.preroll_requested * 1000)
+        encoder = self._make_encoder(self.bitrate, self.encoder_threads)
+        self.cam.start_encoder(encoder, ring, name="main")
+        self._encoder, self._ring = encoder, ring
+        self.preroll_active = self.preroll_requested
+        self.preroll_error = None
 
     def close(self) -> None:
         with self._lock:
             if self.cam is None:
                 return
             try:
-                if self.recording:
+                if self._ring is not None and self.recording:
+                    self._ring.close_output()
+                    self.recording = False
+                if self._encoder is not None:
                     self._stop_encoder()
                 self.cam.stop()
             finally:
                 self.cam.close()
                 self.cam = None
+                self._ring = None
+                self.preroll_active = 0
 
     @contextmanager
     def capture(self) -> Iterator[Frame]:
@@ -207,22 +267,17 @@ class Picamera2Backend(CameraBackend):
         self.cam.set_controls(c)
 
     def start_clip(self, path: Path, bitrate: int) -> None:
-        from picamera2.encoders import H264Encoder
-
-        try:
-            from picamera2.outputs import PyavOutput
-
-            output = PyavOutput(str(path), format="mp4")
-        except ImportError:  # older picamera2
-            from picamera2.outputs import FfmpegOutput
-
-            output = FfmpegOutput(str(path))
         with self._lock:
             if self.cam is None or self.recording:
                 return
-            encoder = H264Encoder(bitrate=bitrate)
-            self.cam.start_encoder(encoder, output, name="main")
-            self._encoder = encoder
+            output = self._mp4_output(path)
+            if self._ring is not None:
+                # Buffered seconds are written first, then the live stream.
+                self._ring.open_output(output)
+            else:
+                encoder = self._make_encoder(bitrate)
+                self.cam.start_encoder(encoder, output, name="main")
+                self._encoder = encoder
             self.recording = True
 
     def _stop_encoder(self) -> None:
@@ -233,7 +288,12 @@ class Picamera2Backend(CameraBackend):
 
     def stop_clip(self) -> None:
         with self._lock:
-            if self.cam is not None and self.recording:
+            if self.cam is None or not self.recording:
+                return
+            if self._ring is not None:
+                self._ring.close_output()  # the always-on encoder keeps buffering
+                self.recording = False
+            else:
                 self._stop_encoder()
 
 
@@ -252,6 +312,7 @@ class MockBackend(CameraBackend):
         self._start = time.time()
         self._writer = None
         self._open = False
+        self._ring: deque[tuple[float, np.ndarray]] = deque()
 
     def open(self) -> None:
         import cv2
@@ -269,10 +330,13 @@ class MockBackend(CameraBackend):
         self._background = np.clip(base + noise, 0, 255).astype(np.uint8)
         self._background[..., 1] = np.clip(self._background[..., 1] + 30, 0, 255)
         self._open = True
+        self.preroll_active = self.preroll_requested
 
     def close(self) -> None:
         self.stop_clip()
         self._open = False
+        self._ring.clear()
+        self.preroll_active = 0
 
     def _render(self, t: float) -> np.ndarray:
         if self._images:
@@ -296,12 +360,17 @@ class MockBackend(CameraBackend):
 
         if not self._open:
             raise CameraError("camera not open")
-        time.sleep(0.01)
+        time.sleep(1 / self.settings.fps)  # like a real camera: wait for the next frame
         main = self._render(time.time() - self._start)
         lw, lh = lores_size(self.settings.resolution)
         lores = cv2.resize(main, (lw, lh), interpolation=cv2.INTER_AREA)
+        now = time.time()
         if self._writer is not None:
             self._writer.write(cv2.cvtColor(lores, cv2.COLOR_RGB2BGR))
+        elif self.preroll_active:
+            self._ring.append((now, lores))
+            while self._ring and now - self._ring[0][0] > self.preroll_active:
+                self._ring.popleft()
         yield Frame(time.time(), gray=lambda: cv2.cvtColor(lores, cv2.COLOR_RGB2GRAY),
                     lores=lambda: lores, main=lambda: main)
 
@@ -312,7 +381,9 @@ class MockBackend(CameraBackend):
         import cv2
 
         lw, lh = lores_size(self.settings.resolution)
-        self._writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 2, (lw, lh))
+        self._writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), self.settings.fps, (lw, lh))
+        while self._ring:  # pre-roll: buffered frames first
+            self._writer.write(cv2.cvtColor(self._ring.popleft()[1], cv2.COLOR_RGB2BGR))
         self.recording = True
 
     def stop_clip(self) -> None:

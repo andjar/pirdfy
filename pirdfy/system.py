@@ -48,6 +48,7 @@ class SystemMonitor:
         self._cache_at = 0.0
         self._lock = threading.Lock()
         self._started = time.time()
+        self._proc = None
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -56,12 +57,17 @@ class SystemMonitor:
             import psutil
 
             vm = psutil.virtual_memory()
-            proc = psutil.Process()
+            if self._proc is None:
+                self._proc = psutil.Process()
+                self._proc.cpu_percent(None)  # prime; first reading is meaningless
+            proc = self._proc
             self._cache = {
                 "cpu_percent": psutil.cpu_percent(interval=None),
                 "load": [round(x, 2) for x in psutil.getloadavg()],
                 "memory_percent": vm.percent,
                 "process_mb": round(proc.memory_info().rss / 2 ** 20),
+                # Percent of one core (can exceed 100 on the 4-core Pi 5).
+                "process_cpu": round(proc.cpu_percent(None)),
                 "temperature": cpu_temperature(),
                 "throttled": throttled(),
                 "uptime": int(time.time() - psutil.boot_time()),

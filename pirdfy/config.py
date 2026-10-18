@@ -125,6 +125,15 @@ class VideoSettings(_Model):
     max_clip_seconds: Annotated[int, Field(ge=5, le=600)] = 60
     cooldown: Annotated[int, Field(ge=0, le=3600)] = 10
     bitrate: Annotated[int, Field(ge=500_000, le=25_000_000)] = 6_000_000
+    # Seconds of video from *before* the detection (the arrival). 0 = off.
+    # Needs the H.264 encoder running all the time: on the Pi 5 that is software
+    # encoding, so it costs CPU and heat. Measure with `pirdfy bench` first.
+    preroll_seconds: Annotated[int, Field(ge=0, le=10)] = 0
+    # CPU threads for the always-on encoder (leaves the rest for the detector).
+    preroll_threads: Annotated[int, Field(ge=1, le=4)] = 2
+
+    # Changing these restarts the camera (the encoder is set up when it opens).
+    RESTART_FIELDS: ClassVar[frozenset[str]] = frozenset({"preroll_seconds", "preroll_threads", "bitrate"})
 
     @model_validator(mode="after")
     def _max_ge_clip(self) -> VideoSettings:

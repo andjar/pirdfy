@@ -69,6 +69,7 @@
     <legend>Video</legend>
     <div class="fields">
       {{ check("video.enabled", "Record a video clip when a visit starts") }}
+      {{ num("video.preroll_seconds", "Include the arrival", "Seconds of video from before the bird was detected; 0 turns it off. This keeps the video encoder running all the time, which on the Pi 5 uses extra CPU and heat even when no bird is there. Run 'sudo pirdfy bench' on the Pi to measure it first.", 0, 10, 1, "seconds") }}
       {{ num("video.clip_seconds", "Clip length", "Recording continues while the bird stays, up to the maximum.", 5, 300, 1, "seconds") }}
       {{ num("video.max_clip_seconds", "Maximum clip length", "", 5, 600, 1, "seconds") }}
       {{ num("video.cooldown", "Pause between clips", "", 0, 3600, 1, "seconds") }}
