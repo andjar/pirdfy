@@ -1,211 +1,131 @@
-# 🐦 Pirdfy - Bird Feeder Camera Detector
+# Pirdfy
 
-A Raspberry Pi 5-based bird feeder camera system that captures, detects, and catalogs birds visiting your feeder.
+A bird feeder camera for the **Raspberry Pi 5**. It watches the feeder, notices when a
+bird arrives, saves a few good photos and a short video of each visit, and shows
+everything on a dashboard you can open from your phone. It also works offline.
 
-## Features
+- **Visits, not thousands of frames.** Photos are only written to the SD card while a bird is
+  there (at most one every few seconds, plus one whenever more birds arrive), grouped into visits.
+- **Light on the Pi.** A cheap motion check wakes the detector only when the picture changes; the
+  detector (YOLO, ONNX Runtime) runs on a small 640 px stream from the camera's ISP. No PyTorch.
+- **Video that plays everywhere.** H.264 MP4 clips, recorded without interrupting detection,
+  extended while the bird stays.
+- **Push notifications** to ntfy, Telegram, Pushover, Discord, email and
+  [many more](https://github.com/caronc/apprise/wiki), with a close-up photo.
+- **Keeps itself tidy.** Retention per photo/video age, a storage cap and a free-space guard;
+  favourites are kept forever.
+- **Password protected**, hardened systemd service, no CDN or web fonts.
+- **One command to install, one button to update**, with automatic rollback if an update fails.
 
-- 📸 **Automatic Photo Capture** - Configurable interval (1 second default)
-- 🔍 **Bird Detection** - YOLOv8-powered bird detection and segmentation
-- 📹 **Video Mode** - Automatically record video when birds are detected
-- 📊 **Statistics Dashboard** - Heatmaps by hour and species
-- 📷 **Multi-Camera Support** - Support for 1-2 Raspberry Pi cameras
-- 🔋 **Battery Monitoring** - Track battery status on portable setups
-- 📱 **Mobile-Friendly** - Access dashboard from your phone
-- 🔒 **Security** - Runs as dedicated `pirdfy` user (not root)
+## Install
 
-## Requirements
-
-- Raspberry Pi 5 (4GB+ RAM recommended)
-- **Raspberry Pi Camera Module v2/v3** (uses picamera2/libcamera)
-- Debian Trixie / Raspberry Pi OS Bookworm or newer
-- Python 3.11+
-- 32GB+ SD card recommended
-
-## Installation
-
-### Option 1: From GitHub (after pushing to repo)
+Raspberry Pi OS (64-bit) Bookworm or Trixie on a Raspberry Pi 5 with a Camera Module (v2, v3 or HQ):
 
 ```bash
-# Clone and install
-git clone https://github.com/andjar/pirdfy.git
-cd pirdfy
-sudo chmod +x install.sh
-sudo ./install.sh
+curl -fsSL https://raw.githubusercontent.com/andjar/pirdfy/main/install.sh | sudo bash
 ```
 
-### Option 2: One-liner (after pushing to repo)
+The installer asks for a dashboard password (or generates one) and prints the address, usually
+`http://<hostname>.local:8080`. Running it again is safe: it repairs what is missing and never
+touches your settings or photos.
+
+<details>
+<summary>What the installer does</summary>
+
+1. Installs the needed apt packages (picamera2, OpenCV, ffmpeg, ...).
+2. Creates the `pirdfy` system user (in the `video` group).
+3. Checks out the latest release into `/opt/pirdfy` and builds a Python environment from the
+   locked `requirements.txt` (camera and imaging libraries come from apt).
+4. Downloads the detection model to `/var/lib/pirdfy/models` (or builds it once on the Pi).
+5. Installs `pirdfy.service` (hardened) plus `pirdfy-update.path`, which lets the web
+   interface request updates without giving the service root rights.
+6. Starts Pirdfy and waits until it reports healthy.
+
+Upgrading from Pirdfy 1.x: the old installation is moved to `/opt/pirdfy-v1-backup-<date>`
+(including its photos) and the new version is installed cleanly.
+</details>
+
+## Update
+
+**Settings → System → Install update**, or:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/andjar/pirdfy/main/install.sh | sudo bash
+sudo pirdfy update          # latest release (or main, if you chose the development channel)
+pirdfy update --check       # only look
 ```
 
-### Option 3: Manual installation (local files)
+Each update backs up the database, installs the new code and packages, restarts, and checks
+`/healthz`. If the new version does not come up, the previous version, Python environment and
+database are restored automatically.
 
-```bash
-# Copy project to your Pi, then:
-cd pirdfy
-sudo chmod +x install.sh
-sudo ./install.sh
+## Everyday commands
+
+```text
+pirdfy status      service status and dashboard address
+pirdfy logs        follow the log         pirdfy logs -n 200   last 200 lines
+pirdfy doctor      check camera, model, service, power supply and disk
+pirdfy passwd      change the dashboard password
+pirdfy config      edit settings in a text editor, validate, restart
+pirdfy camera      list connected cameras
+pirdfy restart | stop | start
 ```
-
-## What the installer does
-
-1. Creates a dedicated `pirdfy` system user (security)
-2. Installs system dependencies (libcamera, picamera2, etc.)
-3. Sets up Python virtual environment with system packages
-4. Downloads YOLOv8 bird detection model
-5. Creates systemd service for auto-start
-6. Sets up proper file permissions
-
-## Usage
-
-### Commands
-
-```bash
-pirdfy start     # Start the service
-pirdfy stop      # Stop the service
-pirdfy restart   # Restart the service
-pirdfy status    # Check service status
-pirdfy logs      # View live logs (Ctrl+C to exit)
-pirdfy camera    # Test camera connectivity
-pirdfy config    # Edit configuration
-pirdfy update    # Update to latest version
-pirdfy fix       # Fix file permissions
-pirdfy url       # Show dashboard URL
-pirdfy help      # Show all commands
-```
-
-### Access Dashboard
-
-Open your browser and navigate to:
-```
-http://<raspberry-pi-ip>:8080
-```
-
-Find your Pi's IP with: `hostname -I`
 
 ## Configuration
 
-Edit `/opt/pirdfy/config/config.yaml`:
+Almost everything is in **Settings** in the web interface. The same settings live in
+`/etc/pirdfy/config.yaml`, which only contains what you changed; every option with its default is
+documented in [`config/config.example.yaml`](config/config.example.yaml).
 
-```yaml
-camera:
-  capture_interval: 1  # seconds between photos
-  resolution: [1920, 1080]
-  cameras:
-    - id: 0
-      name: "Bird Feeder"
-      enabled: true
-      exposure: auto
-      white_balance: auto
+| Path | What |
+|---|---|
+| `/opt/pirdfy` | code and Python environment (replaced on update) |
+| `/etc/pirdfy/config.yaml` | your settings |
+| `/var/lib/pirdfy` | database, photos and videos (`media/YYYY/MM/DD`), model, password hash |
 
-detection:
-  model: "yolov8n"
-  confidence_threshold: 0.5
-  
-video:
-  enabled: true
-  duration: 20  # seconds to record
-  cooldown: 10  # seconds between recordings
+### Reaching the dashboard from outside your home
 
-web:
-  host: "0.0.0.0"
-  port: 8080
-```
+The dashboard always requires a password and blocks cross-site requests. Over plain HTTP the
+password travels unencrypted, so for access over the internet use HTTPS: either set
+`web.tls_cert` / `web.tls_key`, or put it behind a reverse proxy such as Caddy (and set
+`web.trusted_proxies: ["127.0.0.1"]`).
 
 ## Troubleshooting
 
-### Camera not detected
+- **No camera / "Camera 0 not detected"**: `pirdfy camera` should list it. Check the ribbon cable
+  orientation and reboot. Camera errors are also shown on the dashboard.
+- **"Model file not found"**: `sudo pirdfy model`.
+- **Under-voltage warnings**: use the official 27 W USB-C supply; the dashboard and
+  `pirdfy doctor` show throttling.
+- **Forgot the password**: `sudo pirdfy passwd`.
+
+## API
+
+Everything the dashboard does goes through a JSON API (same login cookie). Interactive docs are at
+`/api/docs` once you are signed in. Live events (`visit_started`, `visit_ended`, `photo`,
+`recording`, `camera`, `warning`) stream from `/api/events` (Server-Sent Events).
+
+## Development
 
 ```bash
-# Test camera
-pirdfy camera
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e '.[dev]'
+pytest && ruff check pirdfy tests
 
-# Or manually:
-rpicam-hello --list-cameras
+# Run without a Pi: mock camera, optionally fed with your own JPEGs
+mkdir -p dev-data/models && cp /path/to/yolov8n.onnx dev-data/models/
+python -m pirdfy passwd
+PIRDFY_CAMERA=mock PIRDFY_MOCK_IMAGES=~/bird-photos python -m pirdfy serve
 ```
 
-### Permission issues
+The mock camera is only used when `PIRDFY_CAMERA=mock` is set; on a Pi a missing or broken camera
+is reported as an error rather than silently replaced by fake images.
 
-```bash
-# Fix permissions
-pirdfy fix
-
-# Check pirdfy user is in video group
-groups pirdfy
-```
-
-### Service won't start
-
-```bash
-# Check logs
-pirdfy logs
-
-# Check service status
-pirdfy status
-```
-
-### After reboot camera not working
-
-You may need to enable the camera interface:
-```bash
-sudo raspi-config
-# Interface Options -> Camera -> Enable
-sudo reboot
-```
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/photos` | GET | List recent photos |
-| `/api/photos/<id>` | GET | Get photo details |
-| `/api/birds` | GET | List detected birds |
-| `/api/stats/hourly` | GET | Hourly detection heatmap |
-| `/api/stats/species` | GET | Species statistics |
-| `/api/config` | GET/POST | Get/update configuration |
-| `/api/camera/settings` | GET/POST | Camera settings |
-| `/api/status` | GET | System status (battery, etc.) |
-| `/api/control/start` | POST | Start capture |
-| `/api/control/stop` | POST | Stop capture |
-
-## Project Structure
-
-```
-/opt/pirdfy/
-├── config/
-│   └── config.yaml      # Configuration
-├── src/
-│   ├── main.py          # Main entry point
-│   ├── camera.py        # Raspberry Pi camera handling
-│   ├── detector.py      # YOLOv8 bird detection
-│   ├── recorder.py      # Video recording
-│   ├── database.py      # SQLite database
-│   ├── battery.py       # Battery monitoring
-│   └── web/
-│       ├── app.py       # Flask web server
-│       └── templates/   # HTML templates
-├── data/
-│   ├── photos/          # Captured photos
-│   ├── birds/           # Cropped bird images
-│   ├── videos/          # Recorded videos
-│   └── pirdfy.db        # SQLite database
-├── logs/                # Application logs
-├── models/              # Detection models
-└── venv/                # Python virtual environment
-```
-
-## Security
-
-- Runs as dedicated `pirdfy` user (not root)
-- Systemd security hardening enabled
-- No external network access required
-- All data stored locally
-
-## Inspired By
-
-- [BirdNET-Pi](https://github.com/mcguirepr89/BirdNET-Pi)
+Project layout: `pirdfy/` (camera, motion, detector, pipeline, storage, notify, auth, web),
+`deploy/` (systemd units and the `pirdfy` command), `install.sh`, `tests/`.
 
 ## License
 
-MIT License
+MIT for Pirdfy itself. The default YOLOv8 model weights are published by Ultralytics under
+AGPL-3.0; see their license if you redistribute them.
+
+Inspired by [BirdNET-Pi](https://github.com/mcguirepr89/BirdNET-Pi).

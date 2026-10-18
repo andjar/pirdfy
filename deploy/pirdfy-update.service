@@ -1,0 +1,9 @@
+[Unit]
+Description=Update Pirdfy (requested from the web interface)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# The script removes the request file first, so the path unit does not loop.
+ExecStart=/bin/bash /opt/pirdfy/install.sh update --from-request --yes
+TimeoutStartSec=1h

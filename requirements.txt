@@ -1,38 +1,87 @@
-# Pirdfy - Bird Feeder Camera Detector
-# Python Dependencies
-#
-# NOTE: The following are installed via apt (not pip):
-#   - picamera2 (python3-picamera2)
-#   - numpy (python3-numpy)
-#   - PIL/Pillow (python3-pil)
-#   - opencv (python3-opencv)
-#
-# The venv is created with --system-site-packages to use these.
+# Locked runtime dependencies (installed with --no-deps). Regenerate: see requirements.in
+annotated-doc==0.0.5
+    # via fastapi
+annotated-types==0.8.0
+    # via pydantic
+anyio==4.15.1
+    # via starlette
+apprise==2.0.1
+    # via -r requirements.in
+certifi==2026.7.22
+    # via
+    #   apprise
+    #   requests
+charset-normalizer==3.5.2
+    # via requests
+click==8.5.0
+    # via
+    #   apprise
+    #   uvicorn
+fastapi==0.143.5
+    # via -r requirements.in
+flatbuffers==25.12.19
+    # via onnxruntime
+h11==0.16.0
+    # via uvicorn
+idna==3.20
+    # via
+    #   anyio
+    #   requests
+jinja2==3.1.6
+    # via -r requirements.in
+markdown==3.11.1
+    # via apprise
+markupsafe==3.0.4
+    # via jinja2
+oauthlib==4.0.0
+    # via requests-oauthlib
+onnxruntime==1.31.0
+    # via -r requirements.in
+opentelemetry-api==1.45.1
+    # via fastapi
+packaging==26.3
+    # via onnxruntime
+protobuf==7.36.2
+    # via onnxruntime
+psutil==7.2.2
+    # via -r requirements.in
+pydantic==2.14.1
+    # via fastapi
+pydantic-core==2.50.1
+    # via pydantic
+pyyaml==6.0.3
+    # via
+    #   -r requirements.in
+    #   apprise
+requests==2.34.2
+    # via
+    #   apprise
+    #   requests-oauthlib
+requests-oauthlib==2.0.0
+    # via apprise
+starlette==1.8.0
+    # via fastapi
+typing-extensions==4.16.0
+    # via
+    #   anyio
+    #   fastapi
+    #   opentelemetry-api
+    #   pydantic
+    #   pydantic-core
+    #   starlette
+    #   typing-inspection
+typing-inspection==0.4.4
+    # via
+    #   fastapi
+    #   pydantic
+tzdata==2026.5 ; sys_platform == 'win32'
+    # via apprise
+urllib3==2.8.0
+    # via
+    #   apprise
+    #   requests
+uvicorn==0.54.0
+    # via -r requirements.in
 
-# Web Framework
-flask>=3.0.0
-flask-socketio>=5.3.0
-flask-cors>=4.0.0
-
-# Bird Detection (YOLOv8)
-ultralytics>=8.0.0
-
-# Database
-SQLAlchemy>=2.0.0
-
-# Configuration
-PyYAML>=6.0
-
-# System Monitoring
-psutil>=5.9.0
-
-# WebSocket support
-python-socketio>=5.10.0
-eventlet>=0.34.0
-
-# Utilities
-python-dateutil>=2.8.0
-requests>=2.31.0
-
-# Push Notifications
-apprise>=1.6.0
+# The following packages were excluded from the output:
+# numpy

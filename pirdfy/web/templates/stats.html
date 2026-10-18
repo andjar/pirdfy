@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Stats · Pirdfy{% endblock %}
+{% block main %}
+<div class="page-head">
+  <h1>Stats</h1>
+  <div class="actions">
+    <label class="sr-only" for="range">Period</label>
+    <select id="range">
+      <option value="7">Last 7 days</option>
+      <option value="14" selected>Last 14 days</option>
+      <option value="30">Last 30 days</option>
+      <option value="90">Last 90 days</option>
+    </select>
+  </div>
+</div>
+<div class="stat-row">
+  <div class="panel stat"><strong id="s-visits">–</strong><span class="muted">visits in this period</span></div>
+  <div class="panel stat"><strong id="s-busiest">–</strong><span class="muted">busiest hour</span></div>
+  <div class="panel stat"><strong id="s-peak">–</strong><span class="muted">most birds at once</span></div>
+  <div class="panel stat"><strong id="s-total">–</strong><span class="muted" id="s-total-l">visits since the start</span></div>
+</div>
+<section class="panel" aria-labelledby="heat-h">
+  <h2 id="heat-h">When birds come</h2>
+  <p class="muted small">Each square is one hour; darker means more visits.</p>
+  <div class="chart-scroll"><div class="heat" id="heat"></div></div>
+</section>
+<section class="panel" aria-labelledby="daily-h">
+  <h2 id="daily-h">Visits per day</h2>
+  <div class="chart-scroll"><div class="bars" id="bars" role="img"></div><div class="bars-x" id="bars-x" aria-hidden="true"></div></div>
+</section>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/stats.js?v={{ version }}"></script>{% endblock %}

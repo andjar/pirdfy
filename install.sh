@@ -1,885 +1,555 @@
 #!/bin/bash
 #
-# Pirdfy Installation Script
-# Bird Feeder Camera Detector for Raspberry Pi 5
+# Pirdfy installer and updater for Raspberry Pi 5.
 #
-# Usage:
-#   curl -sSL https://raw.githubusercontent.com/yourusername/pirdfy/main/install.sh | bash
+#   Install:  curl -fsSL https://raw.githubusercontent.com/andjar/pirdfy/main/install.sh | sudo bash
+#   Update:   sudo pirdfy update          (or the button in Settings)
 #
-# Or:
-#   chmod +x install.sh
-#   ./install.sh
+# Safe to run again at any time: it only does what is missing, never overwrites
+# your settings or photos, and an update that fails its health check is rolled
+# back automatically.
 #
+# Commands: install (default) | update | doctor | model | uninstall [--purge]
+# Options:  --yes            no questions (used by the web updater)
+#           --channel C      stable (latest release, default) or edge (main branch)
+#           --ref REF        install a specific tag, branch or commit
+#           --repo URL       install from another git URL or a local checkout
+#           --no-start       do not start the service
+#
+# Everything is inside functions and `main "$@"` runs last, so bash has read the
+# whole file before anything executes: required for `curl | bash`, and for
+# updating the very file that is running.
 
-set -e
+set -Eeuo pipefail
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# Paths can be overridden for testing only.
+APP=${PIRDFY_APP:-/opt/pirdfy}
+ETC=${PIRDFY_ETC:-/etc/pirdfy}
+DATA=${PIRDFY_DATA:-/var/lib/pirdfy}
+SVC_USER=pirdfy
+UNIT=pirdfy
+REPO_URL_DEFAULT=https://github.com/andjar/pirdfy.git
+MODEL=yolov8n
+MODEL_URL=https://github.com/andjar/pirdfy/releases/download/models-v1
+STATUS_FILE=$DATA/update/status.json
+LOCK=/run/pirdfy-install.lock
+HEALTH_TIMEOUT=${PIRDFY_HEALTH_TIMEOUT:-120}
 
-# Installation directory
-INSTALL_DIR="/opt/pirdfy"
-SERVICE_NAME="pirdfy"
-SERVICE_USER="pirdfy"
-SERVICE_GROUP="pirdfy"
-REPO_URL="https://github.com/andjar/pirdfy.git"
+# ---------------------------------------------------------------- output
+if [[ -t 1 ]]; then B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; N=$'\e[0m'; else B='' G='' Y='' R='' N=''; fi
+step() { CURRENT_STEP="$*"; echo "${B}==>${N} $*"; status_update running "$*"; }
+info() { echo "    $*"; }
+ok()   { echo "${G} ✓${N} $*"; }
+warn() { echo "${Y} !${N} $*" >&2; }
+die()  { echo "${R} ✗ $*${N}" >&2; status_update failed "$*"; exit 1; }
 
-# Print functions
-print_header() {
-    echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}  🐦 Pirdfy - Bird Feeder Camera Detector${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+# ---------------------------------------------------------------- state
+CMD=install
+YES=0
+CHANNEL=""
+REF=""
+REPO_URL=""
+NO_START=0
+PURGE=0
+FROM_REQUEST=0
+PREVIOUS=""
+GENERATED_PASSWORD=""
+STATUS_ENABLED=0
+APPLYING=0
+DB_BACKUP=""
+CURRENT_STEP=""
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      install|update|doctor|model|uninstall|__apply) CMD=$1 ;;
+      --yes|-y) YES=1 ;;
+      --channel) CHANNEL=${2:?}; shift ;;
+      --ref) REF=${2:?}; shift ;;
+      --repo) REPO_URL=${2:?}; shift ;;
+      --no-start) NO_START=1 ;;
+      --purge) PURGE=1 ;;
+      --from-request) FROM_REQUEST=1 ;;
+      --previous) PREVIOUS=${2:?}; shift ;;
+      -h|--help) sed -n '2,20p' "$0" 2>/dev/null || true; exit 0 ;;
+      *) die "Unknown option: $1" ;;
+    esac
+    shift
+  done
 }
 
-print_step() {
-    echo -e "${GREEN}▶${NC} $1"
+# A terminal for questions, even under `curl | sudo bash` (stdin is the script).
+have_tty() { [[ $YES -eq 0 ]] && { true </dev/tty; } 2>/dev/null; }
+ask() { # ask "Question" default(y/n); --yes answers yes
+  local reply def=$2
+  [[ $YES -eq 1 ]] && return 0
+  have_tty || { [[ $def == y ]]; return; }
+  read -r -p "$1 [$( [[ $def == y ]] && echo Y/n || echo y/N )] " reply </dev/tty || reply=""
+  reply=${reply:-$def}
+  [[ $reply =~ ^[Yy] ]]
 }
 
-print_info() {
-    echo -e "${BLUE}ℹ${NC} $1"
+status_update() { # state message
+  [[ $STATUS_ENABLED -eq 1 ]] || return 0
+  mkdir -p "$DATA/update"
+  local now; now=$(date +%s)
+  local msg=${2//\\/\\\\}; msg=${msg//\"/\\\"}
+  printf '{"state":"%s","message":"%s","from":"%s","to":"%s","started_at":%s,"finished_at":%s}\n' \
+    "$1" "$msg" "${PREVIOUS:-}" "$(git -C "$APP" describe --tags --always 2>/dev/null || true)" \
+    "${STARTED_AT:-$now}" "$( [[ $1 == running ]] && echo null || echo "$now")" > "$STATUS_FILE.tmp" || return 0
+  chmod 644 "$STATUS_FILE.tmp"; mv -f "$STATUS_FILE.tmp" "$STATUS_FILE"
 }
 
-print_warning() {
-    echo -e "${YELLOW}⚠${NC} $1"
+on_error() {
+  local code=$? line=${1:-?}
+  [[ -n ${ERROR_REPORTED:-} || $BASH_SUBSHELL -gt 0 ]] && return 0
+  ERROR_REPORTED=1
+  echo "${R} ✗ Failed at line $line (exit $code).${N} Run 'sudo pirdfy doctor' or see 'pirdfy logs -n 100'." >&2
+  status_update failed "Failed at step: ${CURRENT_STEP:-unknown}"
 }
 
-print_error() {
-    echo -e "${RED}✖${NC} $1"
+need_root() { [[ $EUID -eq 0 ]] || die "Run as root: sudo bash install.sh $CMD"; }
+
+lock() {
+  exec 9>"$LOCK"
+  flock -n 9 || die "Another Pirdfy install or update is running."
 }
 
-print_success() {
-    echo -e "${GREEN}✓${NC} $1"
+# ---------------------------------------------------------------- checks
+check_system() {
+  step "Checking the system"
+  local model=""
+  [[ -r /proc/device-tree/model ]] && model=$(tr -d '\0' </proc/device-tree/model)
+  if [[ $model == *"Raspberry Pi 5"* || -n ${PIRDFY_SKIP_HW_CHECK:-} ]]; then ok "${model:-hardware check skipped}"
+  else
+    warn "Pirdfy is built for the Raspberry Pi 5 (found: ${model:-unknown})."
+    ask "Continue anyway?" n || die "Stopped."
+  fi
+  . /etc/os-release
+  case "${VERSION_CODENAME:-}" in
+    bookworm|trixie) ok "$PRETTY_NAME" ;;
+    *) warn "Untested OS: ${PRETTY_NAME:-unknown}. Raspberry Pi OS Bookworm or Trixie is recommended." ;;
+  esac
+  [[ $(uname -m) == aarch64 ]] || warn "64-bit Raspberry Pi OS is required for the detector (found $(uname -m))."
+  local free_mb; free_mb=$(df -Pm /var | awk 'NR==2{print $4}')
+  (( free_mb > 1500 )) || die "At least 1.5 GB of free disk space is needed (have ${free_mb} MB)."
 }
 
-# Check if running as root
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        print_error "This script must be run as root (use sudo)"
-        exit 1
-    fi
+check_python() {
+  python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
+    || die "Python 3.11 or newer is required (Raspberry Pi OS Bookworm or later)."
 }
 
-# Create dedicated service user
-create_service_user() {
-    print_step "Creating service user..."
-    
-    # Create pirdfy group if it doesn't exist
-    if ! getent group "$SERVICE_GROUP" > /dev/null 2>&1; then
-        groupadd --system "$SERVICE_GROUP"
-        print_info "Created group: $SERVICE_GROUP"
-    else
-        print_info "Group $SERVICE_GROUP already exists"
-    fi
-    
-    # Build list of groups that exist on this system
-    EXTRA_GROUPS="video"
-    for grp in gpio i2c spi render; do
-        if getent group "$grp" > /dev/null 2>&1; then
-            EXTRA_GROUPS="$EXTRA_GROUPS,$grp"
-        fi
-    done
-    
-    # Create pirdfy user if it doesn't exist
-    if ! id "$SERVICE_USER" > /dev/null 2>&1; then
-        useradd --system \
-            --gid "$SERVICE_GROUP" \
-            --groups "$EXTRA_GROUPS" \
-            --home-dir "$INSTALL_DIR" \
-            --no-create-home \
-            --shell /usr/sbin/nologin \
-            "$SERVICE_USER"
-        print_info "Created user: $SERVICE_USER (groups: $EXTRA_GROUPS)"
-    else
-        print_info "User $SERVICE_USER already exists"
-        # Ensure user is in required groups
-        usermod -aG "$EXTRA_GROUPS" "$SERVICE_USER" 2>/dev/null || true
-    fi
-    
-    # Add user to video group for camera access (ensure it's there)
-    usermod -aG video "$SERVICE_USER" 2>/dev/null || true
-    
-    print_success "Service user configured"
+# ---------------------------------------------------------------- packages
+APT_PACKAGES=(git ca-certificates curl python3 python3-venv python3-picamera2 python3-libcamera
+              python3-numpy python3-opencv python3-pil python3-av ffmpeg rpicam-apps sqlite3)
+
+install_packages() {
+  step "Installing system packages"
+  local missing=()
+  for p in "${APT_PACKAGES[@]}"; do
+    dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "ok installed" || missing+=("$p")
+  done
+  if [[ ${#missing[@]} -eq 0 ]]; then ok "All present"; return; fi
+  info "Installing: ${missing[*]}"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  # python3-av and rpicam-apps have older names on some images; don't fail on those two.
+  apt-get install -y -qq --no-install-recommends "${missing[@]}" || {
+    warn "Retrying without optional packages"
+    local core=()
+    for p in "${missing[@]}"; do [[ $p == python3-av || $p == rpicam-apps ]] || core+=("$p"); done
+    apt-get install -y -qq --no-install-recommends "${core[@]}"
+  }
+  ok "System packages installed"
 }
 
-# Check system requirements
-check_requirements() {
-    print_step "Checking system requirements..."
-    
-    # Check if Raspberry Pi
-    if ! grep -q "Raspberry Pi" /proc/cpuinfo 2>/dev/null; then
-        print_warning "This doesn't appear to be a Raspberry Pi. Continuing anyway..."
-    fi
-    
-    # Check Python version
-    if command -v python3 &> /dev/null; then
-        PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
-        print_info "Python version: $PYTHON_VERSION"
-        
-        # Check if Python 3.9+
-        if python3 -c 'import sys; exit(0 if sys.version_info >= (3, 9) else 1)'; then
-            print_success "Python version OK"
-        else
-            print_error "Python 3.9 or higher is required"
-            exit 1
-        fi
-    else
-        print_error "Python 3 is not installed"
-        exit 1
-    fi
-    
-    # Check available memory
-    TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}')
-    if [[ $TOTAL_MEM -lt 2048 ]]; then
-        print_warning "System has less than 2GB RAM. Performance may be limited."
-    fi
-    
-    # Check available disk space
-    AVAIL_SPACE=$(df -BG /opt | awk 'NR==2{print $4}' | sed 's/G//')
-    if [[ $AVAIL_SPACE -lt 5 ]]; then
-        print_warning "Less than 5GB free space available. Consider freeing up disk space."
-    fi
+# ---------------------------------------------------------------- user & dirs
+create_user() {
+  if ! id "$SVC_USER" &>/dev/null; then
+    useradd --system --home-dir "$DATA" --no-create-home --shell /usr/sbin/nologin "$SVC_USER"
+    ok "Created system user $SVC_USER"
+  fi
+  local g
+  for g in video render; do
+    if getent group "$g" >/dev/null; then usermod -aG "$g" "$SVC_USER"; fi
+  done
 }
 
-# Install system dependencies
-install_dependencies() {
-    print_step "Installing system dependencies..."
-    
-    apt-get update
-    
-    # Core build tools and libraries
-    apt-get install -y \
-        python3-pip \
-        python3-venv \
-        python3-dev \
-        python3-numpy \
-        python3-opencv \
-        python3-pil \
-        build-essential \
-        cmake \
-        git \
-        curl \
-        wget
-    
-    # Camera libraries (libcamera for Raspberry Pi Camera)
-    apt-get install -y \
-        libcap-dev \
-        libcamera-dev \
-        libcamera-apps
-    
-    # Image processing libraries
-    apt-get install -y \
-        libjpeg-dev \
-        libpng-dev \
-        libtiff-dev \
-        libwebp-dev
-    
-    # Math/ML libraries
-    # Note: libatlas-base-dev removed from Debian trixie
-    # See: https://github.com/numpy/numpy/issues/29108
-    apt-get install -y \
-        libopenblas-dev \
-        libhdf5-dev \
-        liblapack-dev
-    
-    # Video encoding
-    apt-get install -y \
-        ffmpeg \
-        v4l-utils
-    
-    print_success "System dependencies installed"
+create_dirs() {
+  install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" "$DATA" "$DATA/models" "$DATA/update" "$DATA/backups"
+  # The web UI saves settings here, so the service may write this directory.
+  install -d -m 0770 -o root -g "$SVC_USER" "$ETC"
+  if [[ ! -f $ETC/config.yaml ]]; then
+    cat > "$ETC/config.yaml" <<'EOF'
+# Pirdfy settings. Only values that differ from the defaults belong here.
+# All options with explanations: /opt/pirdfy/config/config.example.yaml
+# Most settings can also be changed in the web interface (Settings).
+{}
+EOF
+    ok "Created $ETC/config.yaml"
+  fi
+  chown root:"$SVC_USER" "$ETC/config.yaml"; chmod 0660 "$ETC/config.yaml"
 }
 
-# Install picamera2 and camera dependencies
-install_picamera2_deps() {
-    print_step "Installing Raspberry Pi Camera dependencies..."
-    
-    # Core picamera2 and libcamera packages for Raspberry Pi / Debian
-    apt-get install -y \
-        python3-picamera2 \
-        python3-libcamera \
-        python3-kms++ \
-        python3-prctl \
-        python3-pil
-    
-    # Camera tools (rpicam-apps for newer Pi OS, libcamera-apps for older/Debian)
-    apt-get install -y rpicam-apps 2>/dev/null || \
-        apt-get install -y libcamera-apps 2>/dev/null || true
-    
-    # Enable camera interface via raspi-config if available
-    if command -v raspi-config &> /dev/null; then
-        print_info "Configuring camera interface..."
-        raspi-config nonint do_camera 0 2>/dev/null || true
-        raspi-config nonint do_legacy 1 2>/dev/null || true
-    fi
-    
-    # Add service user to video group for camera access
-    usermod -aG video "$SERVICE_USER" 2>/dev/null || true
-    
-    # Create udev rules for camera device access
-    print_info "Creating udev rules for camera access..."
-    cat > /etc/udev/rules.d/99-camera.rules << 'UDEV_EOF'
-# Allow video group access to camera devices
-SUBSYSTEM=="video4linux", GROUP="video", MODE="0660"
-SUBSYSTEM=="media", GROUP="video", MODE="0660"
-KERNEL=="vchiq", GROUP="video", MODE="0660"
-SUBSYSTEM=="dma_heap", GROUP="video", MODE="0660"
-UDEV_EOF
-    
-    # Reload udev rules
-    udevadm control --reload-rules
-    udevadm trigger
-    
-    # Test if camera is detected
-    print_info "Testing camera detection..."
-    if command -v rpicam-hello &> /dev/null; then
-        rpicam-hello --list-cameras 2>/dev/null || print_warning "No cameras detected yet (may need reboot)"
-    elif command -v libcamera-hello &> /dev/null; then
-        libcamera-hello --list-cameras 2>/dev/null || print_warning "No cameras detected yet (may need reboot)"
-    fi
-    
-    print_success "Camera dependencies installed"
+# ---------------------------------------------------------------- legacy v1
+migrate_v1() {
+  [[ -f $APP/src/main.py ]] || return 0
+  step "Moving the old Pirdfy (v1) out of the way"
+  systemctl disable --now "$UNIT" 2>/dev/null || true
+  local backup
+  backup="/opt/pirdfy-v1-backup-$(date +%Y%m%d-%H%M%S)"
+  mv "$APP" "$backup"
+  rm -f /etc/udev/rules.d/99-camera.rules
+  [[ -L /usr/local/bin/pirdfy ]] || rm -f /usr/local/bin/pirdfy
+  ok "Old installation kept in $backup (photos in $backup/data). Delete it when you no longer need it."
 }
 
-# Create installation directory and clone/copy files
-setup_installation() {
-    print_step "Setting up installation directory..."
-    
-    # Create directory
-    mkdir -p "$INSTALL_DIR"
-    
-    # Add safe directory for git (required when running as root with different owner)
-    git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
-    
-    # Get script directory
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    
-    # If running from git repo or local directory, copy files
-    if [[ -f "$SCRIPT_DIR/requirements.txt" ]]; then
-        print_info "Installing from local files..."
-        
-        # Copy all project files
-        cp -r "$SCRIPT_DIR"/* "$INSTALL_DIR/" 2>/dev/null || true
-        
-        # Make sure config directory exists and has config
-        mkdir -p "$INSTALL_DIR/config"
-        if [[ -f "$SCRIPT_DIR/config/config.yaml" ]]; then
-            cp "$SCRIPT_DIR/config/config.yaml" "$INSTALL_DIR/config/"
-        fi
-        
-        # Remove any Windows line endings
-        if command -v dos2unix &> /dev/null; then
-            find "$INSTALL_DIR" -name "*.py" -exec dos2unix {} \; 2>/dev/null
-            find "$INSTALL_DIR" -name "*.yaml" -exec dos2unix {} \; 2>/dev/null
-            find "$INSTALL_DIR" -name "*.sh" -exec dos2unix {} \; 2>/dev/null
-        fi
-    else
-        # Clone from repository
-        print_info "Cloning from repository..."
-        if [[ -d "$INSTALL_DIR/.git" ]]; then
-            cd "$INSTALL_DIR"
-            git pull
-        else
-            rm -rf "$INSTALL_DIR"
-            git clone "$REPO_URL" "$INSTALL_DIR"
-        fi
-    fi
-    
-    # Ensure main.py is executable
-    chmod +x "$INSTALL_DIR/src/main.py" 2>/dev/null || true
-    
-    # Set initial ownership to pirdfy user
-    chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR" 2>/dev/null || true
-    
-    print_success "Installation directory set up"
+# ---------------------------------------------------------------- code
+resolve_ref() { # prints the commit/tag to check out
+  if [[ -n $REF ]]; then echo "$REF"; return; fi
+  if [[ ${CHANNEL:-stable} == stable ]]; then
+    local tag
+    tag=$(git -C "$APP" tag -l 'v*' --sort=-v:refname | head -n1)
+    if [[ -n $tag ]]; then echo "$tag"; return; fi
+  fi
+  echo "origin/main"
 }
 
-# Create Python virtual environment
-create_venv() {
-    print_step "Creating Python virtual environment..."
-    
-    cd "$INSTALL_DIR"
-    
-    # Remove existing venv if present
-    if [[ -d "venv" ]]; then
-        print_info "Removing existing virtual environment..."
-        rm -rf venv
-    fi
-    
-    # Create venv with system site packages (required for picamera2)
-    # picamera2 is installed via apt and needs system libraries
-    print_info "Creating virtual environment with system packages..."
-    python3 -m venv --system-site-packages venv
-    
-    # Activate virtual environment
-    source venv/bin/activate
-    
-    # Upgrade pip and core tools
-    print_info "Upgrading pip and setuptools..."
-    pip install --upgrade pip wheel setuptools
-    
-    # Install requirements (picamera2, PIL, numpy, opencv come from system packages)
-    print_info "Installing Python packages (this may take several minutes on Raspberry Pi)..."
-    
-    # First try to use system packages where available
-    pip install --no-cache-dir -r requirements.txt || {
-        print_warning "Some packages failed, trying with --ignore-installed for system packages..."
-        pip install --no-cache-dir --ignore-installed -r requirements.txt
-    }
-    
-    # Verify system packages are available
-    print_info "Verifying installations..."
-    
-    python3 -c "import picamera2; print(f'  picamera2: {picamera2.__version__}')" 2>/dev/null || \
-        print_warning "picamera2 not available (install: sudo apt install python3-picamera2)"
-    
-    python3 -c "import numpy; print(f'  numpy: {numpy.__version__}')" 2>/dev/null || \
-        print_warning "numpy not available"
-    
-    python3 -c "import PIL; print(f'  PIL: {PIL.__version__}')" 2>/dev/null || \
-        print_warning "PIL not available"
-    
-    python3 -c "import cv2; print(f'  OpenCV: {cv2.__version__}')" 2>/dev/null || \
-        print_warning "OpenCV not available"
-    
-    python3 -c "import flask; print(f'  Flask: {flask.__version__}')" 2>/dev/null || \
-        print_error "Flask not installed"
-    
-    python3 -c "import ultralytics; print(f'  ultralytics: {ultralytics.__version__}')" 2>/dev/null || \
-        print_error "ultralytics not installed"
-    
-    # Set ownership of venv to pirdfy user
-    chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/venv"
-    
-    print_success "Python environment created (owned by $SERVICE_USER)"
+fetch_code() {
+  step "Getting Pirdfy"
+  local url=${REPO_URL:-$REPO_URL_DEFAULT}
+  git config --global --get-all safe.directory 2>/dev/null | grep -qx "$APP" || git config --global --add safe.directory "$APP"
+  if [[ -d $APP/.git ]]; then
+    if [[ -n $REPO_URL ]]; then git -C "$APP" remote set-url origin "$url"; fi
+    git -C "$APP" fetch --quiet --tags --force --prune origin || die "Could not reach $url. Are you online?"
+  else
+    rm -rf "$APP.new"
+    git clone --quiet "$url" "$APP.new" || die "Could not download $url. Are you online?"
+    [[ -e $APP ]] && rm -rf "$APP"
+    mv "$APP.new" "$APP"
+  fi
+  local target; target=$(resolve_ref)
+  git -C "$APP" -c advice.detachedHead=false checkout --quiet --force "$target"
+  git -C "$APP" clean -fdq -e venv -e venv.prev
+  chown -R root:root "$APP"
+  chmod -R go-w "$APP"
+  ok "Version $(cat "$APP/VERSION") ($(git -C "$APP" describe --tags --always))"
 }
 
-# Download YOLO model
-download_model() {
-    print_step "Downloading bird detection model..."
-    
-    cd "$INSTALL_DIR"
-    source venv/bin/activate
-    
-    # Download YOLOv8n model (as pirdfy user so it's in the right location)
-    # The model will be downloaded to the current directory
-    print_info "Downloading YOLOv8n model (this may take a moment)..."
-    sudo -u "$SERVICE_USER" "$INSTALL_DIR/venv/bin/python" -c "
-import os
-os.chdir('$INSTALL_DIR')
+# ---------------------------------------------------------------- python
+venv_hash() { cat "$APP/requirements.txt" <(python3 -V 2>&1) | sha256sum | cut -c1-16; }
+
+setup_venv() {
+  step "Setting up Python packages"
+  local want; want=$(venv_hash)
+  if [[ -f $APP/venv/.pirdfy-hash && $(cat "$APP/venv/.pirdfy-hash") == "$want" ]]; then
+    ok "Up to date"; return
+  fi
+  rm -rf "$APP/venv.prev"
+  [[ -d $APP/venv ]] && mv "$APP/venv" "$APP/venv.prev"
+  # System site packages: picamera2, libcamera, numpy and OpenCV come from apt.
+  python3 -m venv --system-site-packages "$APP/venv"
+  "$APP/venv/bin/pip" install --quiet --disable-pip-version-check --no-cache-dir --no-deps \
+    -r "$APP/requirements.txt" || die "Installing Python packages failed (see above)."
+  "$APP/venv/bin/python" - <<'EOF' || die "Python environment check failed."
+import importlib, sys
+mods = ["fastapi", "uvicorn", "onnxruntime", "cv2", "numpy", "PIL", "yaml", "apprise", "psutil"]
+bad = []
+for m in mods:
+    try:
+        importlib.import_module(m)
+    except Exception as e:  # noqa: BLE001
+        bad.append(f"{m}: {e}")
+try:
+    import picamera2  # noqa: F401
+except Exception as e:  # noqa: BLE001
+    print(f"warning: picamera2 not importable: {e}", file=sys.stderr)
+if bad:
+    print("\n".join(bad), file=sys.stderr)
+    sys.exit(1)
+EOF
+  echo "$want" > "$APP/venv/.pirdfy-hash"
+  ok "Python packages installed"
+}
+
+# ---------------------------------------------------------------- model
+model_ok() { [[ -s $DATA/models/$MODEL.onnx ]]; }
+
+fetch_model() {
+  model_ok && [[ $CMD != model ]] && return 0
+  step "Getting the bird detection model"
+  local tmp; tmp=$(mktemp -d)
+  if curl -fsSL --retry 3 -o "$tmp/m.onnx" "$MODEL_URL/$MODEL.onnx" \
+     && curl -fsSL --retry 3 -o "$tmp/m.sha256" "$MODEL_URL/$MODEL.onnx.sha256" \
+     && [[ $(sha256sum "$tmp/m.onnx" | cut -d' ' -f1) == $(cut -d' ' -f1 "$tmp/m.sha256") ]]; then
+    install -m 0644 -o "$SVC_USER" -g "$SVC_USER" "$tmp/m.onnx" "$DATA/models/$MODEL.onnx"
+    rm -rf "$tmp"; ok "Downloaded $MODEL.onnx"; return
+  fi
+  rm -rf "$tmp"
+  info "No ready-made model available; building it on the Pi (one-time, about 10 minutes)."
+  export_model
+}
+
+export_model() {
+  local work=/var/tmp/pirdfy-export
+  rm -rf "$work"; mkdir -p "$work"
+  python3 -m venv "$work/venv"
+  "$work/venv/bin/pip" install --quiet --disable-pip-version-check --no-cache-dir ultralytics onnx onnxslim \
+    || die "Could not install the model export tools."
+  (cd "$work" && "$work/venv/bin/python" - <<EOF) || die "Model export failed."
 from ultralytics import YOLO
-model = YOLO('yolov8n.pt')
-print('Model downloaded successfully')
-" || {
-        # Fallback: download as root and fix permissions
-        print_warning "Downloading as root (fallback)..."
-        python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
-        # Move model to models dir and fix ownership
-        mv -f yolov8n.pt "$INSTALL_DIR/models/" 2>/dev/null || true
-        chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/models"
-    }
-    
-    print_success "Detection model downloaded"
-}
-
-# Create data directories with proper permissions
-create_directories() {
-    print_step "Creating data directories..."
-    
-    # Create all required directories
-    mkdir -p "$INSTALL_DIR/data/photos"
-    mkdir -p "$INSTALL_DIR/data/birds"
-    mkdir -p "$INSTALL_DIR/data/videos"
-    mkdir -p "$INSTALL_DIR/data/annotated"
-    mkdir -p "$INSTALL_DIR/logs"
-    mkdir -p "$INSTALL_DIR/models"
-    mkdir -p "$INSTALL_DIR/config"
-    
-    # Set ownership to pirdfy user
-    chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR"
-    
-    # Base directory permissions - readable by all, writable by owner
-    chmod 755 "$INSTALL_DIR"
-    chmod -R 755 "$INSTALL_DIR/src"
-    chmod -R 755 "$INSTALL_DIR/config"
-    
-    # Data directories - writable by pirdfy user
-    chmod 755 "$INSTALL_DIR/data"
-    chmod 755 "$INSTALL_DIR/data/photos"
-    chmod 755 "$INSTALL_DIR/data/birds"
-    chmod 755 "$INSTALL_DIR/data/videos"
-    chmod 755 "$INSTALL_DIR/data/annotated"
-    
-    # Logs directory - writable by pirdfy user
-    chmod 755 "$INSTALL_DIR/logs"
-    
-    # Models directory
-    chmod 755 "$INSTALL_DIR/models"
-    
-    # Create empty log files with correct permissions
-    touch "$INSTALL_DIR/logs/pirdfy.log"
-    chmod 644 "$INSTALL_DIR/logs/pirdfy.log"
-    chown "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/logs/pirdfy.log"
-    
-    touch "$INSTALL_DIR/logs/service.log"
-    chmod 644 "$INSTALL_DIR/logs/service.log"
-    chown "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/logs/service.log"
-    
-    print_success "Directories created with correct permissions for user $SERVICE_USER"
-}
-
-# Create systemd service
-create_service() {
-    print_step "Creating systemd service..."
-    
-    # Build list of supplementary groups that exist
-    SUPP_GROUPS="video"
-    for grp in gpio i2c spi render plugdev; do
-        if getent group "$grp" > /dev/null 2>&1; then
-            SUPP_GROUPS="$SUPP_GROUPS $grp"
-        fi
-    done
-    
-    cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
-[Unit]
-Description=Pirdfy Bird Feeder Camera Detector
-After=network.target multi-user.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-# Run as dedicated pirdfy user (not root)
-User=${SERVICE_USER}
-Group=${SERVICE_GROUP}
-WorkingDirectory=${INSTALL_DIR}
-
-# Environment
-Environment=PATH=${INSTALL_DIR}/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=PYTHONUNBUFFERED=1
-Environment=HOME=${INSTALL_DIR}
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-
-# Start command
-ExecStart=${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/src/main.py --config ${INSTALL_DIR}/config/config.yaml
-
-# Restart policy
-Restart=always
-RestartSec=10
-TimeoutStartSec=60
-TimeoutStopSec=30
-
-# Allow camera and hardware access via supplementary groups
-SupplementaryGroups=${SUPP_GROUPS}
-
-# IMPORTANT: Disable all security restrictions for camera access
-# libcamera requires full access to /dev/media*, /dev/video*, /dev/dma_heap/*
-PrivateTmp=false
-PrivateDevices=false
-ProtectSystem=false
-ProtectHome=false
-NoNewPrivileges=false
-DevicePolicy=auto
-
-# Logging - redirect to files
-StandardOutput=append:${INSTALL_DIR}/logs/service.log
-StandardError=append:${INSTALL_DIR}/logs/service.log
-
-# Resource limits
-LimitNOFILE=65536
-MemoryMax=2G
-
-[Install]
-WantedBy=multi-user.target
+YOLO("$MODEL.pt").export(format="onnx", imgsz=(384, 640), opset=17, simplify=True, dynamic=False)
 EOF
-
-    # Reload systemd
-    systemctl daemon-reload
-    
-    # Enable service to start on boot
-    systemctl enable ${SERVICE_NAME}
-    
-    print_success "Systemd service created (runs as user: ${SERVICE_USER})"
+  install -m 0644 -o "$SVC_USER" -g "$SVC_USER" "$work/$MODEL.onnx" "$DATA/models/$MODEL.onnx"
+  rm -rf "$work"
+  ok "Built $MODEL.onnx"
 }
 
-# Create pirdfy command with subcommands
-create_scripts() {
-    print_step "Creating pirdfy command..."
-    
-    # Create single pirdfy command with subcommands
-    cat > /usr/local/bin/pirdfy << 'EOF'
-#!/bin/bash
-#
-# Pirdfy - Bird Feeder Camera Detector
-# Usage: pirdfy <command>
-#
-
-INSTALL_DIR="/opt/pirdfy"
-SERVICE_NAME="pirdfy"
-SERVICE_USER="pirdfy"
-SERVICE_GROUP="pirdfy"
-
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-show_help() {
-    echo -e "${BLUE}🐦 Pirdfy - Bird Feeder Camera Detector${NC}"
-    echo ""
-    echo "Usage: pirdfy <command>"
-    echo ""
-    echo "Commands:"
-    echo "  start       Start the pirdfy service"
-    echo "  stop        Stop the pirdfy service"
-    echo "  restart     Restart the pirdfy service"
-    echo "  status      Show service status"
-    echo "  logs        Follow live logs (Ctrl+C to exit)"
-    echo "  update      Update pirdfy to latest version"
-    echo "  camera      Test camera connectivity"
-    echo "  fix         Fix file permissions"
-    echo "  config      Edit configuration file"
-    echo "  url         Show dashboard URL"
-    echo "  help        Show this help message"
-    echo ""
+# ---------------------------------------------------------------- password
+pirdfy_py() {
+  env PYTHONPATH="$APP" PIRDFY_DATA_DIR="$DATA" PIRDFY_CONFIG="$ETC/config.yaml" \
+    runuser -u "$SVC_USER" -- "$APP/venv/bin/python" -m pirdfy "$@"
 }
 
-cmd_start() {
-    echo -e "${GREEN}▶${NC} Starting Pirdfy..."
-    sudo systemctl start "$SERVICE_NAME"
-    sleep 1
-    if systemctl is-active --quiet "$SERVICE_NAME"; then
-        IP_ADDR=$(hostname -I | awk '{print $1}')
-        echo -e "${GREEN}✓${NC} Pirdfy started"
-        echo -e "${BLUE}📊 Dashboard:${NC} http://${IP_ADDR}:8080"
-    else
-        echo -e "${RED}✖${NC} Failed to start Pirdfy"
-        echo "Check logs with: pirdfy logs"
-    fi
-}
-
-cmd_stop() {
-    echo -e "${YELLOW}■${NC} Stopping Pirdfy..."
-    sudo systemctl stop "$SERVICE_NAME"
-    echo -e "${GREEN}✓${NC} Pirdfy stopped"
-}
-
-cmd_restart() {
-    echo -e "${YELLOW}↻${NC} Restarting Pirdfy..."
-    sudo systemctl restart "$SERVICE_NAME"
-    sleep 1
-    if systemctl is-active --quiet "$SERVICE_NAME"; then
-        echo -e "${GREEN}✓${NC} Pirdfy restarted"
-    else
-        echo -e "${RED}✖${NC} Failed to restart Pirdfy"
-    fi
-}
-
-cmd_status() {
-    echo -e "${BLUE}📊 Pirdfy Status${NC}"
-    echo ""
-    systemctl status "$SERVICE_NAME" --no-pager
-}
-
-cmd_logs() {
-    echo -e "${BLUE}📋 Pirdfy Logs${NC} (Ctrl+C to exit)"
-    echo ""
-    sudo journalctl -u "$SERVICE_NAME" -f
-}
-
-cmd_update() {
-    echo -e "${BLUE}📥 Updating Pirdfy...${NC}"
-    
-    cd "$INSTALL_DIR" || exit 1
-    
-    # Stop service
-    sudo systemctl stop "$SERVICE_NAME"
-    
-    # Pull latest code
-    echo "Pulling latest changes..."
-    git pull
-    
-    # Update Python packages
-    echo "Updating Python packages..."
-    source venv/bin/activate
-    pip install -r requirements.txt
-    
-    # Fix ownership
-    sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR"
-    
-    # Restart service
-    sudo systemctl start "$SERVICE_NAME"
-    
-    echo -e "${GREEN}✓${NC} Pirdfy updated and restarted"
-}
-
-cmd_camera() {
-    echo -e "${BLUE}📷 Testing Raspberry Pi Camera${NC}"
-    echo ""
-    
-    if command -v rpicam-hello &> /dev/null; then
-        echo "Detected cameras:"
-        rpicam-hello --list-cameras
-        echo ""
-        echo "Taking test photo..."
-        rpicam-jpeg -o /tmp/pirdfy-test.jpg -t 1000 2>/dev/null
-        if [[ -f /tmp/pirdfy-test.jpg ]]; then
-            echo -e "${GREEN}✓${NC} Test photo saved to /tmp/pirdfy-test.jpg"
-            ls -lh /tmp/pirdfy-test.jpg
-            rm /tmp/pirdfy-test.jpg
-        else
-            echo -e "${RED}✖${NC} Failed to capture test photo"
-        fi
-    elif command -v libcamera-hello &> /dev/null; then
-        echo "Detected cameras:"
-        libcamera-hello --list-cameras
-        echo ""
-        echo "Taking test photo..."
-        libcamera-jpeg -o /tmp/pirdfy-test.jpg -t 1000 2>/dev/null
-        if [[ -f /tmp/pirdfy-test.jpg ]]; then
-            echo -e "${GREEN}✓${NC} Test photo saved to /tmp/pirdfy-test.jpg"
-            rm /tmp/pirdfy-test.jpg
-        fi
-    else
-        echo -e "${RED}✖${NC} Camera tools not found"
-        echo "Install with: sudo apt install rpicam-apps"
-    fi
-}
-
-cmd_fix() {
-    echo -e "${BLUE}🔧 Fixing Pirdfy permissions${NC}"
-    
-    # Ensure user exists
-    if ! id "$SERVICE_USER" &>/dev/null; then
-        echo -e "${RED}✖${NC} User $SERVICE_USER does not exist"
-        exit 1
-    fi
-    
-    # Fix ownership
-    sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/data"
-    sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/logs"
-    sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/models"
-    
-    # Fix permissions
-    sudo chmod 755 "$INSTALL_DIR"
-    sudo chmod -R 755 "$INSTALL_DIR/data"
-    sudo chmod 755 "$INSTALL_DIR/logs"
-    sudo chmod 644 "$INSTALL_DIR/logs/"*.log 2>/dev/null
-    
-    # Ensure user in video group
-    sudo usermod -aG video "$SERVICE_USER"
-    
-    echo -e "${GREEN}✓${NC} Permissions fixed for user $SERVICE_USER"
-}
-
-cmd_config() {
-    if command -v nano &> /dev/null; then
-        sudo nano "$INSTALL_DIR/config/config.yaml"
-    elif command -v vim &> /dev/null; then
-        sudo vim "$INSTALL_DIR/config/config.yaml"
-    else
-        echo "Config file: $INSTALL_DIR/config/config.yaml"
-        cat "$INSTALL_DIR/config/config.yaml"
-    fi
-}
-
-cmd_url() {
-    IP_ADDR=$(hostname -I | awk '{print $1}')
-    echo -e "${BLUE}📊 Pirdfy Dashboard${NC}"
-    echo ""
-    echo "  http://${IP_ADDR}:8080"
-    echo ""
-    if systemctl is-active --quiet "$SERVICE_NAME"; then
-        echo -e "  Status: ${GREEN}Running${NC}"
-    else
-        echo -e "  Status: ${RED}Stopped${NC}"
-    fi
-}
-
-# Main command handler
-case "${1:-help}" in
-    start)      cmd_start ;;
-    stop)       cmd_stop ;;
-    restart)    cmd_restart ;;
-    status)     cmd_status ;;
-    logs)       cmd_logs ;;
-    update)     cmd_update ;;
-    camera)     cmd_camera ;;
-    fix)        cmd_fix ;;
-    config)     cmd_config ;;
-    url)        cmd_url ;;
-    help|--help|-h)  show_help ;;
-    *)
-        echo -e "${RED}Unknown command:${NC} $1"
-        echo ""
-        show_help
-        exit 1
-        ;;
-esac
-EOF
-    chmod +x /usr/local/bin/pirdfy
-    
-    print_success "Created 'pirdfy' command"
-}
-
-# Configure hostname (optional)
-configure_hostname() {
-    print_step "Configuring hostname..."
-    
-    read -p "Set hostname to 'pirdfy'? (y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        hostnamectl set-hostname pirdfy
-        
-        # Update /etc/hosts
-        sed -i 's/127.0.1.1.*/127.0.1.1\tpirdfy/' /etc/hosts
-        
-        print_success "Hostname set to 'pirdfy'"
-    else
-        print_info "Hostname unchanged"
-    fi
-}
-
-# Verify installation
-verify_installation() {
-    print_step "Verifying installation..."
-    
-    local errors=0
-    
-    # Check service user exists
-    if id "$SERVICE_USER" &>/dev/null; then
-        print_success "Service user '$SERVICE_USER' exists"
-    else
-        print_error "Service user '$SERVICE_USER' not found"
-        ((errors++))
-    fi
-    
-    # Check service user is in video group
-    if id "$SERVICE_USER" 2>/dev/null | grep -q video; then
-        print_success "Service user is in video group"
-    else
-        print_error "Service user not in video group"
-        ((errors++))
-    fi
-    
-    # Check directories exist and are owned by service user
-    for dir in data/photos data/birds data/videos data/annotated logs; do
-        if [[ -d "$INSTALL_DIR/$dir" ]]; then
-            owner=$(stat -c '%U' "$INSTALL_DIR/$dir")
-            if [[ "$owner" == "$SERVICE_USER" ]]; then
-                print_success "Directory $dir owned by $SERVICE_USER"
-            else
-                print_warning "Directory $dir owned by $owner (expected $SERVICE_USER)"
-            fi
-        else
-            print_error "Directory $dir does not exist"
-            ((errors++))
-        fi
+ensure_password() {
+  if [[ -f $DATA/auth.json ]] && grep -q '"password"' "$DATA/auth.json"; then return; fi
+  step "Setting the dashboard password"
+  local pw="" pw2=""
+  if have_tty; then
+    while true; do
+      read -r -s -p "    Choose a password for the dashboard (8+ characters, empty = generate one): " pw </dev/tty; echo
+      [[ -z $pw ]] && break
+      (( ${#pw} >= 8 )) || { warn "Too short."; continue; }
+      read -r -s -p "    Repeat it: " pw2 </dev/tty; echo
+      [[ $pw == "$pw2" ]] && break
+      warn "The passwords do not match."
     done
-    
-    # Check log file is writable by service user
-    if sudo -u "$SERVICE_USER" touch "$INSTALL_DIR/logs/test.log" 2>/dev/null; then
-        rm -f "$INSTALL_DIR/logs/test.log"
-        print_success "Log directory is writable by $SERVICE_USER"
-    else
-        print_error "Cannot write to log directory as $SERVICE_USER"
-        ((errors++))
-    fi
-    
-    # Check config file exists
-    if [[ -f "$INSTALL_DIR/config/config.yaml" ]]; then
-        print_success "Configuration file exists"
-    else
-        print_error "Configuration file missing"
-        ((errors++))
-    fi
-    
-    # Check virtual environment
-    if [[ -f "$INSTALL_DIR/venv/bin/python" ]]; then
-        print_success "Virtual environment exists"
-    else
-        print_error "Virtual environment not found"
-        ((errors++))
-    fi
-    
-    # Check systemd service
-    if systemctl is-enabled ${SERVICE_NAME} &>/dev/null; then
-        print_success "Systemd service is enabled"
-    else
-        print_error "Systemd service not enabled"
-        ((errors++))
-    fi
-    
-    # Check camera access
-    if [[ -e /dev/video0 ]] || [[ -e /dev/vchiq ]]; then
-        print_success "Camera device detected"
-    else
-        print_warning "No camera device found (may need reboot or camera not connected)"
-    fi
-    
-    if [[ $errors -gt 0 ]]; then
-        print_warning "Installation completed with $errors issue(s)"
-    else
-        print_success "All verification checks passed"
-    fi
+  fi
+  if [[ -z $pw ]]; then
+    pw=$(python3 -c 'import secrets,string; a=string.ascii_lowercase+string.digits; print("-".join("".join(secrets.choice(a) for _ in range(4)) for _ in range(3)))')
+    GENERATED_PASSWORD=$pw
+  fi
+  printf '%s\n' "$pw" | pirdfy_py passwd --stdin >/dev/null
+  ok "Password set (change it any time in Settings or with 'pirdfy passwd')"
 }
 
-# Print final instructions
-print_instructions() {
-    IP_ADDR=$(hostname -I | awk '{print $1}')
-    
-    echo -e "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  ✓ Pirdfy Installation Complete!${NC}"
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
-    
-    echo -e "${BLUE}📍 Installation Directory:${NC} $INSTALL_DIR"
-    echo -e "${BLUE}📊 Dashboard URL:${NC} http://${IP_ADDR}:8080"
-    echo -e "${BLUE}📄 Configuration:${NC} $INSTALL_DIR/config/config.yaml\n"
-    
-    echo -e "${YELLOW}Commands:${NC}"
-    echo -e "  pirdfy start     - Start the service"
-    echo -e "  pirdfy stop      - Stop the service"
-    echo -e "  pirdfy restart   - Restart the service"
-    echo -e "  pirdfy status    - Check service status"
-    echo -e "  pirdfy logs      - View live logs"
-    echo -e "  pirdfy camera    - Test camera"
-    echo -e "  pirdfy config    - Edit configuration"
-    echo -e "  pirdfy update    - Update to latest version"
-    echo -e "  pirdfy help      - Show all commands\n"
-    
-    read -p "Start Pirdfy now? (Y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-        systemctl start ${SERVICE_NAME}
-        print_success "Pirdfy is now running!"
-        echo -e "\n${GREEN}Open your browser and go to: http://${IP_ADDR}:8080${NC}\n"
-    else
-        print_info "Run 'pirdfy-start' when ready to start the service"
+# ---------------------------------------------------------------- systemd
+install_units() {
+  step "Installing the service"
+  local changed=0 f
+  for f in pirdfy.service pirdfy-update.service pirdfy-update.path; do
+    if ! cmp -s "$APP/deploy/$f" "/etc/systemd/system/$f"; then
+      install -m 0644 "$APP/deploy/$f" "/etc/systemd/system/$f"; changed=1
     fi
+  done
+  ln -sfn "$APP/deploy/pirdfy-cli" /usr/local/bin/pirdfy
+  chmod 0755 "$APP/deploy/pirdfy-cli"
+  if (( changed )); then systemctl daemon-reload; fi
+  systemctl enable --quiet "$UNIT" pirdfy-update.path
+  systemctl start pirdfy-update.path
+  ok "Service installed ('pirdfy help' lists the commands)"
 }
 
-# Main installation flow
+web_port() { pirdfy_py get web.port 2>/dev/null || echo 8080; }
+
+wait_healthy() {
+  local port; port=$(web_port)
+  local deadline=$((SECONDS + HEALTH_TIMEOUT))
+  while (( SECONDS < deadline )); do
+    if curl -fsS -m 3 -k "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 \
+       || curl -fsS -m 3 -k "https://127.0.0.1:$port/healthz" >/dev/null 2>&1; then
+      return 0
+    fi
+    systemctl is-failed --quiet "$UNIT" && return 1
+    sleep 2
+  done
+  return 1
+}
+
+restart_service() {
+  [[ $NO_START -eq 1 ]] && { info "Not starting (--no-start)"; return 0; }
+  step "Starting Pirdfy"
+  systemctl restart "$UNIT"
+  if wait_healthy; then ok "Pirdfy is running"; return 0; fi
+  return 1
+}
+
+# ---------------------------------------------------------------- database backup
+backup_db() {
+  [[ -f $DATA/pirdfy.db ]] || return 0
+  local dest
+  dest="$DATA/backups/pirdfy-$(date +%Y%m%d-%H%M%S).db"
+  sqlite3 "$DATA/pirdfy.db" ".backup '$dest'" 2>/dev/null || cp "$DATA/pirdfy.db" "$dest"
+  chown "$SVC_USER:$SVC_USER" "$dest"
+  ls -1t "$DATA"/backups/pirdfy-*.db 2>/dev/null | tail -n +4 | xargs -r rm -f
+  echo "$dest"
+}
+
+# ---------------------------------------------------------------- commands
+do_install() {
+  need_root; lock
+  echo "${B}Pirdfy installer${N}"
+  check_system
+  install_packages
+  check_python
+  create_user
+  migrate_v1
+  create_dirs
+  fetch_code
+  setup_venv
+  fetch_model
+  ensure_password
+  install_units
+  if restart_service; then
+    rm -rf "$APP/venv.prev"
+  else
+    warn "Pirdfy did not report healthy within ${HEALTH_TIMEOUT}s. Check: pirdfy logs -n 100"
+  fi
+  summary
+}
+
+do_update() {
+  need_root; lock
+  STATUS_ENABLED=1; STARTED_AT=$(date +%s)
+  [[ $FROM_REQUEST -eq 1 ]] && rm -f "$DATA/update/request"
+  [[ -d $APP/.git ]] || die "Pirdfy is not installed in $APP. Run the installer first."
+  PREVIOUS=$(git -C "$APP" rev-parse HEAD)
+  [[ -z $CHANNEL ]] && CHANNEL=$(pirdfy_py get updates.channel 2>/dev/null || echo stable)
+  step "Checking for updates ($CHANNEL)"
+  git -C "$APP" fetch --quiet --tags --force --prune origin || die "Could not reach GitHub. Are you online?"
+  local target; target=$(resolve_ref)
+  if [[ $(git -C "$APP" rev-parse "$target^{commit}") == "$PREVIOUS" ]]; then
+    ok "Already up to date ($(git -C "$APP" describe --tags --always))"
+    status_update success "Already up to date"
+    return 0
+  fi
+  git -C "$APP" -c advice.detachedHead=false checkout --quiet --force "$target"
+  chown -R root:root "$APP"
+  # Continue with the *new* installer, so new steps and fixes apply immediately.
+  local extra=()
+  [[ $NO_START -eq 1 ]] && extra+=(--no-start)
+  trap - EXIT
+  exec bash "$APP/install.sh" __apply --previous "$PREVIOUS" --yes "${extra[@]}"
+}
+
+do_apply() { # second half of an update, run by the new version of this script
+  need_root
+  # The install lock (fd 9) is inherited from the first half of the update.
+  STATUS_ENABLED=1; STARTED_AT=$(date +%s)
+  DB_BACKUP=$(backup_db)
+  APPLYING=1   # from here on, any failure rolls back (see on_exit)
+  install_packages
+  create_dirs
+  setup_venv
+  install_units
+  restart_service || die "The new version did not start correctly"
+  APPLYING=0
+  rm -rf "$APP/venv.prev"
+  local now; now=$(git -C "$APP" describe --tags --always)
+  ok "Updated to $now"
+  status_update success "Updated to $now"
+}
+
+on_exit() {
+  local code=$?
+  if [[ $APPLYING -eq 1 && $code -ne 0 ]]; then
+    APPLYING=0
+    rollback "$DB_BACKUP"
+    local back; back=$(git -C "$APP" describe --tags --always)
+    echo "${R} ✗ Update failed; rolled back to $back.${N} See 'pirdfy logs -n 200'." >&2
+    status_update rolled_back "Update failed at '${CURRENT_STEP}'; rolled back to $back"
+  fi
+}
+
+rollback() {
+  warn "Rolling back to ${PREVIOUS:0:7}"
+  set +e
+  systemctl stop "$UNIT"
+  git -C "$APP" -c advice.detachedHead=false checkout --quiet --force "$PREVIOUS"
+  if [[ -d $APP/venv.prev ]]; then rm -rf "$APP/venv"; mv "$APP/venv.prev" "$APP/venv"; fi
+  [[ -n ${1:-} && -f $1 ]] && install -m 0640 -o "$SVC_USER" -g "$SVC_USER" "$1" "$DATA/pirdfy.db" \
+    && rm -f "$DATA/pirdfy.db-wal" "$DATA/pirdfy.db-shm"
+  local f
+  for f in pirdfy.service pirdfy-update.service pirdfy-update.path; do
+    install -m 0644 "$APP/deploy/$f" "/etc/systemd/system/$f"
+  done
+  systemctl daemon-reload
+  systemctl start "$UNIT"
+  set -e
+}
+
+do_model() { need_root; CMD=model; rm -f "$DATA/models/$MODEL.onnx.bak"
+  [[ -f $DATA/models/$MODEL.onnx ]] && mv "$DATA/models/$MODEL.onnx" "$DATA/models/$MODEL.onnx.bak"
+  fetch_model || { mv "$DATA/models/$MODEL.onnx.bak" "$DATA/models/$MODEL.onnx" 2>/dev/null; exit 1; }
+  rm -f "$DATA/models/$MODEL.onnx.bak"; systemctl restart "$UNIT"; }
+
+do_doctor() {
+  local bad=0
+  check() { if eval "$2" &>/dev/null; then ok "$1"; else warn "$1: $3"; bad=1; fi; }
+  echo "${B}Pirdfy doctor${N}"
+  check "Installed in $APP" "[[ -d $APP/.git ]]" "not installed; run the installer"
+  check "Python environment" "[[ -x $APP/venv/bin/python ]]" "missing; run: sudo bash $APP/install.sh"
+  check "Configuration valid" "pirdfy_py check-config" "run 'pirdfy config' to fix"
+  check "Detection model present" "model_ok" "run: sudo pirdfy model"
+  check "Dashboard password set" "grep -q password $DATA/auth.json" "run: sudo pirdfy passwd"
+  check "Service running" "systemctl is-active --quiet $UNIT" "see: pirdfy logs -n 100"
+  check "Web interface answers" "curl -fsS -m 5 -k http://127.0.0.1:$(web_port)/healthz || curl -fsS -m 5 -k https://127.0.0.1:$(web_port)/healthz" "see: pirdfy logs -n 100"
+  if command -v rpicam-hello &>/dev/null; then
+    check "Camera connected" "rpicam-hello --list-cameras 2>&1 | grep -q '^[0-9] :'" "check the ribbon cable, then reboot"
+  fi
+  local health; health=$(curl -fsS -m 5 "http://127.0.0.1:$(web_port)/healthz" 2>/dev/null || true)
+  [[ -n $health ]] && info "Health: $health"
+  if command -v vcgencmd &>/dev/null; then
+    local t; t=$(vcgencmd get_throttled | cut -d= -f2)
+    [[ $t == 0x0 ]] && ok "Power supply OK" || warn "Power or temperature problems since boot ($t). Use the official 27 W supply and a cooler."
+  fi
+  local free_mb; free_mb=$(df -Pm "$DATA" | awk 'NR==2{print $4}')
+  (( free_mb > 2048 )) && ok "Free space: $((free_mb / 1024)) GB" || warn "Low free space: ${free_mb} MB"
+  return $bad
+}
+
+do_uninstall() {
+  need_root
+  ask "Remove Pirdfy$( [[ $PURGE -eq 1 ]] && echo ', including ALL photos, videos and settings' )?" n || die "Cancelled."
+  systemctl disable --now "$UNIT" pirdfy-update.path 2>/dev/null || true
+  rm -f /etc/systemd/system/pirdfy.service /etc/systemd/system/pirdfy-update.service \
+        /etc/systemd/system/pirdfy-update.path /usr/local/bin/pirdfy
+  systemctl daemon-reload
+  rm -rf "$APP" "$APP.new"
+  if [[ $PURGE -eq 1 ]]; then
+    rm -rf "$DATA" "$ETC"; userdel "$SVC_USER" 2>/dev/null || true
+    ok "Pirdfy and all its data were removed"
+  else
+    ok "Pirdfy removed. Photos and settings were kept in $DATA and $ETC (use --purge to delete them)."
+  fi
+}
+
+summary() {
+  local port host ip
+  port=$(web_port); host=$(hostname); ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  echo
+  echo "${G}${B}Pirdfy is installed.${N}"
+  echo "  Open: http://${host}.local:${port}${ip:+   or   http://${ip}:${port}}"
+  if [[ -n $GENERATED_PASSWORD ]]; then
+    echo "  Password: ${B}${GENERATED_PASSWORD}${N}   (shown only now; change it in Settings)"
+  fi
+  echo "  Commands: pirdfy status | logs | update | doctor | help"
+  echo "  Settings file: $ETC/config.yaml     Data: $DATA"
+}
+
 main() {
-    print_header
-    
-    check_root
-    check_requirements
-    create_service_user
-    install_dependencies
-    install_picamera2_deps
-    setup_installation
-    create_directories
-    create_venv
-    download_model
-    create_service
-    create_scripts
-    verify_installation
-    configure_hostname
-    print_instructions
+  parse_args "$@"
+  trap 'on_error $LINENO' ERR
+  trap on_exit EXIT
+  case "$CMD" in
+    install) do_install ;;
+    update) do_update ;;
+    __apply) do_apply ;;
+    doctor) do_doctor ;;
+    model) do_model ;;
+    uninstall) do_uninstall ;;
+  esac
 }
 
-# Run main
 main "$@"

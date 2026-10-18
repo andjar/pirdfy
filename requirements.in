@@ -1,0 +1,10 @@
+# Runtime dependencies (top level). Lock with:
+#   uv pip compile requirements.in --universal --python-version 3.11 --no-emit-package numpy -o requirements.txt
+# numpy, opencv, Pillow and picamera2 come from apt so they match libcamera.
+fastapi
+uvicorn
+jinja2
+pyyaml
+onnxruntime
+apprise
+psutil

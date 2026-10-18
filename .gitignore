@@ -1,45 +1,15 @@
-# Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-env/
 .venv/
-ENV/
-
-# Data files
-data/photos/
-data/birds/
-data/videos/
-data/annotated/
-data/*.db
-
-# Logs
-logs/
-*.log
-
-# Models (downloaded on install)
+venv/
+venv.prev/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dev-data/
+*.onnx
 *.pt
-models/
-
-# IDE
+node_modules/
+.DS_Store
 .idea/
 .vscode/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Distribution
-dist/
-build/
-*.egg-info/

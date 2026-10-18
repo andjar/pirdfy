@@ -1,0 +1,52 @@
+[Unit]
+Description=Pirdfy bird feeder camera
+Documentation=https://github.com/andjar/pirdfy
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=exec
+User=pirdfy
+Group=pirdfy
+SupplementaryGroups=video render
+WorkingDirectory=/opt/pirdfy
+Environment=PIRDFY_DATA_DIR=/var/lib/pirdfy
+Environment=PIRDFY_CONFIG=/etc/pirdfy/config.yaml
+Environment=PYTHONPATH=/opt/pirdfy
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=/opt/pirdfy/venv/bin/python -m pirdfy check-config
+ExecStart=/opt/pirdfy/venv/bin/python -m pirdfy serve
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+MemoryMax=1500M
+
+# Hardening. The camera needs /dev/media*, /dev/video* and /dev/dma_heap/*, so
+# devices stay visible (no PrivateDevices); everything else is locked down.
+# Do not add ProtectClock or DeviceAllow: they switch on a device allow-list that
+# hides the camera. If a future libcamera needs more, relax it with `sudo systemctl edit pirdfy`.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pirdfy /etc/pirdfy
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Only allows binding ports below 1024 (e.g. web.port: 80).
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
