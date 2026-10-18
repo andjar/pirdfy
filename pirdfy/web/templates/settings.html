@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block title %}Settings · Pirdfy{% endblock %}
+
+{% macro num(path, label, hint="", min=None, max=None, step=None, unit="") %}
+<div class="field">
+  <label for="f-{{ path }}">{{ label }}{% if unit %} <span class="muted">({{ unit }})</span>{% endif %}</label>
+  <input id="f-{{ path }}" type="number" data-path="{{ path }}" data-type="number"{% if min is not none %} min="{{ min }}"{% endif %}{% if max is not none %} max="{{ max }}"{% endif %}{% if step %} step="{{ step }}"{% endif %}>
+  {% if hint %}<span class="hint">{{ hint }}</span>{% endif %}
+</div>
+{% endmacro %}
+{% macro check(path, label, hint="") %}
+<div class="field check">
+  <input id="f-{{ path }}" type="checkbox" data-path="{{ path }}" data-type="bool">
+  <label for="f-{{ path }}">{{ label }}</label>
+  {% if hint %}<span class="hint">{{ hint }}</span>{% endif %}
+</div>
+{% endmacro %}
+{% macro text(path, label, hint="", wide=False) %}
+<div class="field{% if wide %} wide{% endif %}">
+  <label for="f-{{ path }}">{{ label }}</label>
+  <input id="f-{{ path }}" type="text" data-path="{{ path }}">
+  {% if hint %}<span class="hint">{{ hint }}</span>{% endif %}
+</div>
+{% endmacro %}
+{% macro range(path, label, min, max, step, hint="", fmt="") %}
+<div class="field">
+  <label for="f-{{ path }}">{{ label }}</label>
+  <div class="range-row"><input id="f-{{ path }}" type="range" data-path="{{ path }}" data-type="number" min="{{ min }}" max="{{ max }}" step="{{ step }}"{% if fmt %} data-fmt="{{ fmt }}"{% endif %}><output for="f-{{ path }}"></output></div>
+  {% if hint %}<span class="hint">{{ hint }}</span>{% endif %}
+</div>
+{% endmacro %}
+
+{% block main %}
+<div class="page-head"><h1>Settings</h1></div>
+<form class="settings" id="form" novalidate>
+  <div id="cameras"></div>
+  <div class="fs-actions" id="cam-actions"></div>
+
+  <fieldset id="detection">
+    <legend>Detection</legend>
+    <div class="fields">
+      <div class="field wide">
+        <span class="field-label"><strong>What to look for</strong></span>
+        <div class="filters" id="classes">
+          {% for c in ["bird", "cat", "dog", "person", "bear"] %}
+          <label class="field check"><input type="checkbox" data-class="{{ c }}"> {{ c }}</label>
+          {% endfor %}
+        </div>
+        <span class="hint">Visits start when any of these is seen. Cats are handy if you want an alert when one stalks the feeder.</span>
+      </div>
+      {{ range("detection.confidence", "Minimum certainty", 0.2, 0.9, 0.05, "Higher means fewer false alarms but may miss birds in poor light.", "pct") }}
+      {{ range("capture.motion.area_threshold", "Motion sensitivity", 0.0005, 0.03, 0.0005, "How much of the picture must change before the detector runs. Lower is more sensitive.", "pct2") }}
+      {{ check("capture.motion.enabled", "Only run the detector when something moves", "Saves a lot of CPU and power. The detector still checks regularly in case a bird sits still.") }}
+      {{ num("capture.interval", "Check every", "Time between analysed frames.", 0.2, 60, 0.1, "seconds") }}
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Visits and photos</legend>
+    <div class="fields">
+      {{ num("capture.visit_gap", "A visit ends after", "Seconds without a detection.", 3, 600, 1, "seconds") }}
+      {{ num("capture.photo_interval", "Save a photo every", "During a visit. A new photo is also saved when more birds arrive.", 1, 600, 1, "seconds") }}
+      {{ num("capture.max_photos_per_visit", "Photos per visit, at most", "", 1, 500, 1) }}
+      {{ num("capture.jpeg_quality", "Photo quality", "", 50, 100, 1, "%") }}
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Video</legend>
+    <div class="fields">
+      {{ check("video.enabled", "Record a video clip when a visit starts") }}
+      {{ num("video.clip_seconds", "Clip length", "Recording continues while the bird stays, up to the maximum.", 5, 300, 1, "seconds") }}
+      {{ num("video.max_clip_seconds", "Maximum clip length", "", 5, 600, 1, "seconds") }}
+      {{ num("video.cooldown", "Pause between clips", "", 0, 3600, 1, "seconds") }}
+      <div class="field">
+        <label for="f-video.bitrate">Video quality</label>
+        <select id="f-video.bitrate" data-path="video.bitrate" data-type="number">
+          <option value="3000000">Small files (3 Mbit/s)</option>
+          <option value="6000000">Balanced (6 Mbit/s)</option>
+          <option value="10000000">High (10 Mbit/s)</option>
+        </select>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset id="storage">
+    <legend>Storage</legend>
+    <p class="muted small" id="disk-info"></p>
+    <div class="fields">
+      {{ num("storage.photo_retention_days", "Keep visits for", "0 keeps them forever. Favourites are never deleted.", 0, 3650, 1, "days") }}
+      {{ num("storage.video_retention_days", "Keep videos for", "Videos take most of the space.", 0, 3650, 1, "days") }}
+      {{ num("storage.max_storage_gb", "Use at most", "0 means no limit; the oldest visits are removed first.", 0, None, 0.5, "GB") }}
+      {{ num("storage.min_free_gb", "Always leave free", "Recording pauses if the card gets fuller than this.", 0.2, None, 0.5, "GB") }}
+    </div>
+  </fieldset>
+
+  <fieldset id="notifications">
+    <legend>Notifications</legend>
+    <div class="fields">
+      {{ check("notifications.enabled", "Send a notification when a visit starts") }}
+      <div class="field wide">
+        <label for="f-notifications.urls">Where to send them</label>
+        <textarea id="f-notifications.urls" data-path="notifications.urls" data-type="lines" spellcheck="false" placeholder="ntfy://ntfy.sh/my-feeder&#10;tgram://bot_token/chat_id&#10;pover://user@token"></textarea>
+        <span class="hint">One Apprise URL per line. Works with ntfy, Telegram, Pushover, Discord, email and <a href="https://github.com/caronc/apprise/wiki" target="_blank" rel="noopener">many more</a>. Saved links are hidden; leave them as they are to keep them.</span>
+      </div>
+      {{ num("notifications.cooldown", "At most one every", "", 0, 86400, 1, "seconds") }}
+      {{ check("notifications.attach_image", "Attach a close-up photo") }}
+      {{ text("notifications.title", "Title", "", True) }}
+      {{ text("notifications.body", "Message", "Placeholders: {count}, {label}, {camera}, {time}, {date}, {confidence:.0%}", True) }}
+    </div>
+    <div class="fs-actions"><button type="button" id="test-notify">Send test notification</button></div>
+  </fieldset>
+
+  <div class="savebar" hidden>
+    <span class="muted small" id="dirty" aria-live="polite">No unsaved changes</span>
+    <button type="button" id="revert" disabled>Undo changes</button>
+    <button type="submit" class="btn-primary" id="save" disabled>Save changes</button>
+  </div>
+</form>
+
+<div class="settings">
+  <fieldset id="security">
+    <legend>Password</legend>
+    <form id="pw-form" class="fields">
+      <div class="field"><label for="pw-current">Current password</label><input id="pw-current" type="password" autocomplete="current-password" required></div>
+      <div class="field"><label for="pw-new">New password</label><input id="pw-new" type="password" autocomplete="new-password" minlength="8" required><span class="hint">At least 8 characters. Signs out all other devices.</span></div>
+      <div class="fs-actions field wide"><button type="submit">Change password</button><button type="button" id="logout">Sign out</button></div>
+    </form>
+  </fieldset>
+
+  <fieldset id="system">
+    <legend>System</legend>
+    <dl class="health" id="version-info"></dl>
+    <div class="fields">
+      <div class="field">
+        <label for="f-updates.channel">Updates</label>
+        <select id="f-updates.channel" data-path="updates.channel" form="form">
+          <option value="stable">Stable releases</option>
+          <option value="edge">Latest development version</option>
+        </select>
+      </div>
+    </div>
+    <div class="fs-actions">
+      <button type="button" id="check-update">Check for updates</button>
+      <button type="button" class="btn-primary" id="do-update" hidden>Install update</button>
+      <button type="button" id="restart">Restart Pirdfy</button>
+    </div>
+    <p class="muted small" id="update-status"></p>
+  </fieldset>
+</div>
+
+<template id="camera-tpl">
+  <fieldset class="camera">
+    <legend>Camera</legend>
+    <div class="fields">
+      <div class="field"><label>Name</label><input type="text" data-cam="name" maxlength="40"></div>
+      <div class="field check"><input type="checkbox" data-cam="enabled"><label>Enabled</label></div>
+      <div class="field"><label>Resolution</label>
+        <select data-cam="resolution">
+          <option value="1280x720">1280 × 720</option>
+          <option value="1920x1080">1920 × 1080</option>
+          <option value="2304x1296">2304 × 1296 (Camera Module 3)</option>
+          <option value="4608x2592">4608 × 2592 (Camera Module 3, slow)</option>
+        </select>
+      </div>
+      <div class="field"><label>Frame rate <span class="muted">(fps)</span></label><input type="number" data-cam="fps" data-type="number" min="5" max="60"></div>
+      <div class="field check"><input type="checkbox" data-cam="hflip"><label>Mirror</label></div>
+      <div class="field check"><input type="checkbox" data-cam="vflip"><label>Upside down</label></div>
+      <div class="field"><label>Exposure</label>
+        <select data-cam="exposure_mode"><option value="auto">Automatic</option><option value="manual">Fixed shutter time</option></select></div>
+      <div class="field" data-show="exposure_mode=manual"><label>Shutter time <span class="muted">(µs)</span></label><input type="number" data-cam="exposure_time_us" data-type="number" min="100" max="1000000"></div>
+      <div class="field" data-show="exposure_mode=auto"><label>Exposure compensation</label><div class="range-row"><input type="range" data-cam="exposure_compensation" data-type="number" min="-4" max="4" step="0.25"><output></output></div></div>
+      <div class="field"><label>White balance</label>
+        <select data-cam="awb_mode">{% for m in awb_modes %}<option value="{{ m }}">{{ m | capitalize }}</option>{% endfor %}</select></div>
+      <div class="field"><label>Brightness</label><div class="range-row"><input type="range" data-cam="brightness" data-type="number" min="-1" max="1" step="0.05"><output></output></div></div>
+      <div class="field"><label>Contrast</label><div class="range-row"><input type="range" data-cam="contrast" data-type="number" min="0" max="2" step="0.05"><output></output></div></div>
+      <div class="field"><label>Saturation</label><div class="range-row"><input type="range" data-cam="saturation" data-type="number" min="0" max="2" step="0.05"><output></output></div></div>
+      <div class="field"><label>Sharpness</label><div class="range-row"><input type="range" data-cam="sharpness" data-type="number" min="0" max="4" step="0.1"><output></output></div></div>
+      <div class="field"><label>Focus <span class="muted">(Camera Module 3)</span></label>
+        <select data-cam="autofocus"><option value="continuous">Automatic</option><option value="manual">Fixed distance</option></select></div>
+      <div class="field" data-show="autofocus=manual"><label>Focus distance</label><div class="range-row"><input type="range" data-cam="lens_position" data-type="number" min="0" max="10" step="0.1"><output></output></div><span class="hint">In dioptres: 0 is far away, 4 is 25 cm, 10 is 10 cm.</span></div>
+    </div>
+  </fieldset>
+</template>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/settings.js?v={{ version }}"></script>{% endblock %}

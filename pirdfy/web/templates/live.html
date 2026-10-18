@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Live · Pirdfy{% endblock %}
+{% block main %}
+<div class="live-grid">
+  <div id="cams">
+    <div class="cam"><div class="cam-empty">Starting camera…</div></div>
+  </div>
+  <aside class="side">
+    <section class="panel" aria-labelledby="today-h">
+      <h2 id="today-h">Today</h2>
+      <div class="today">
+        <div><strong id="t-visits">–</strong><span class="muted small">visits</span></div>
+        <div><strong id="t-peak">–</strong><span class="muted small">most at once</span></div>
+        <div><strong id="t-time">–</strong><span class="muted small">at the feeder</span></div>
+      </div>
+      <div class="ribbon" id="ribbon" role="img" aria-label="Visits today by time"></div>
+      <div class="ribbon-scale" aria-hidden="true"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>
+      <p class="muted small" id="t-last"></p>
+    </section>
+    <section class="panel" aria-labelledby="recent-h">
+      <div class="page-head"><h2 id="recent-h">Latest visits</h2><a class="actions small" href="/gallery">All visits</a></div>
+      <div class="visits" id="recent"></div>
+    </section>
+    <section class="panel" aria-labelledby="sys-h">
+      <h2 id="sys-h">Pi health</h2>
+      <dl class="health" id="health"></dl>
+    </section>
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/live.js?v={{ version }}"></script>{% endblock %}

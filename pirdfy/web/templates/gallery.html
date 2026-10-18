@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Visits · Pirdfy{% endblock %}
+{% block main %}
+<div class="page-head">
+  <h1>Visits</h1>
+  <div class="actions filters">
+    <div class="seg" role="group" aria-label="Show">
+      <button type="button" data-filter="all" aria-pressed="true">All</button>
+      <button type="button" data-filter="favorites" aria-pressed="false">Favourites</button>
+    </div>
+    <label class="sr-only" for="day">Day</label>
+    <input type="date" id="day">
+    <label class="sr-only" for="camera">Camera</label>
+    <select id="camera" hidden></select>
+  </div>
+</div>
+<div id="list"></div>
+<div class="more"><button type="button" id="more" hidden>Show older visits</button></div>
+
+<dialog class="viewer" id="viewer" aria-labelledby="viewer-title">
+  <div class="viewer-head">
+    <h2 id="viewer-title">Visit</h2>
+    <button type="button" class="icon-btn btn-quiet" id="v-fav" aria-pressed="false" title="Keep forever (favourite)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>
+      <span class="sr-only">Favourite</span>
+    </button>
+    <a class="btn icon-btn btn-quiet" id="v-download" title="Download photo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg>
+      <span class="sr-only">Download photo</span>
+    </a>
+    <button type="button" class="icon-btn btn-quiet btn-danger" id="v-delete" title="Delete visit">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+      <span class="sr-only">Delete visit</span>
+    </button>
+    <button type="button" class="icon-btn btn-quiet" id="v-close" title="Close">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      <span class="sr-only">Close</span>
+    </button>
+  </div>
+  <div class="stage" id="stage"></div>
+  <div class="strip" id="strip" aria-label="Photos and video in this visit"></div>
+  <div class="viewer-foot" id="v-foot"></div>
+</dialog>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/gallery.js?v={{ version }}"></script>{% endblock %}

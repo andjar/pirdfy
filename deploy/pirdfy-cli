@@ -1,0 +1,84 @@
+#!/bin/bash
+# Pirdfy command line helper. Installed as /usr/local/bin/pirdfy (a symlink), so
+# it is updated together with the code.
+set -euo pipefail
+
+APP=/opt/pirdfy
+DATA=/var/lib/pirdfy
+ETC=/etc/pirdfy
+UNIT=pirdfy
+
+run_as_root() { if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi; }
+py() {
+  run_as_root env PYTHONPATH="$APP" PIRDFY_DATA_DIR="$DATA" PIRDFY_CONFIG="$ETC/config.yaml" \
+    runuser -u pirdfy -- "$APP/venv/bin/python" -m pirdfy "$@"
+}
+
+port() { py get web.port 2>/dev/null || echo 8080; }
+
+url() {
+  local p ip host
+  p=$(port)
+  host=$(hostname)
+  ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  echo "  http://${host}.local:${p}"
+  [[ -n "$ip" ]] && echo "  http://${ip}:${p}"
+}
+
+usage() {
+  cat <<EOF
+Pirdfy, bird feeder camera
+
+Usage: pirdfy <command>
+
+  status        Service status and dashboard address
+  start | stop | restart
+  logs          Follow the log (Ctrl+C to stop); 'logs -n 200' shows the last lines
+  update        Update to the latest version (rolls back automatically if it fails)
+  update --check  Only show whether an update is available
+  passwd        Set the dashboard password
+  config        Edit /etc/pirdfy/config.yaml, validate it and restart
+  camera        List connected cameras
+  doctor        Check that everything is working
+  model         Download or rebuild the detection model
+  url           Show the dashboard address
+  version       Show the installed version
+  uninstall     Remove Pirdfy (keeps photos and settings unless --purge)
+EOF
+}
+
+cmd="${1:-help}"
+shift || true
+case "$cmd" in
+  status)
+    systemctl --no-pager status "$UNIT" | head -n 12 || true
+    echo; echo "Dashboard:"; url ;;
+  start|stop|restart)
+    run_as_root systemctl "$cmd" "$UNIT"
+    [[ "$cmd" != stop ]] && { echo "Dashboard:"; url; } ;;
+  logs)
+    if [[ $# -gt 0 ]]; then run_as_root journalctl -u "$UNIT" -u pirdfy-update --no-pager "$@"
+    else run_as_root journalctl -u "$UNIT" -u pirdfy-update -f -n 50; fi ;;
+  update)
+    if [[ "${1:-}" == "--check" ]]; then
+      run_as_root git -C "$APP" fetch --quiet --tags origin && \
+        echo "Installed: $(git -C "$APP" describe --tags --always 2>/dev/null)" && \
+        echo "Latest release: $(git -C "$APP" tag -l 'v*' --sort=-v:refname | head -n1)" && \
+        echo "Latest development: $(git -C "$APP" rev-parse --short origin/main)"
+    else
+      run_as_root bash "$APP/install.sh" update "$@"
+    fi ;;
+  passwd) py passwd ;;
+  config)
+    run_as_root "${EDITOR:-nano}" "$ETC/config.yaml"
+    if py check-config; then run_as_root systemctl restart "$UNIT"; echo "Saved and restarted."
+    else echo "Not restarted: fix the errors above and run 'pirdfy config' again."; exit 1; fi ;;
+  camera)
+    if command -v rpicam-hello >/dev/null; then rpicam-hello --list-cameras
+    else echo "rpicam-apps is not installed (sudo apt install rpicam-apps)"; fi ;;
+  doctor|model|uninstall) run_as_root bash "$APP/install.sh" "$cmd" "$@" ;;
+  url) url ;;
+  version) py version ;;
+  help|-h|--help) usage ;;
+  *) echo "Unknown command: $cmd"; echo; usage; exit 1 ;;
+esac

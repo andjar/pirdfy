@@ -1,0 +1,81 @@
+# Pirdfy configuration reference.
+#
+# The live file is /etc/pirdfy/config.yaml. Put ONLY the values you want to change
+# there; everything else uses the defaults shown below. Most settings can also be
+# changed in the web interface (Settings), which writes to the same file.
+# After editing by hand: `pirdfy config` validates and restarts, or run
+# `sudo systemctl restart pirdfy`.
+
+cameras:                      # one or two cameras (Pi 5 has two camera ports)
+  - id: 0                     # 0 = CAM/DISP 0 port, 1 = CAM/DISP 1
+    name: Feeder
+    enabled: true
+    resolution: [1920, 1080]  # saved photos and video; detection uses a 640 px copy
+    fps: 30
+    hflip: false              # mirror
+    vflip: false              # upside down (camera mounted on its head)
+    exposure_mode: auto       # auto | manual
+    exposure_time_us: 10000   # used when exposure_mode is manual
+    exposure_compensation: 0  # -4 .. 4 EV, used in auto mode
+    awb_mode: auto            # auto, incandescent, tungsten, fluorescent, indoor, daylight, cloudy
+    brightness: 0.0           # -1 .. 1
+    contrast: 1.0             # 0 .. 4
+    saturation: 1.0           # 0 .. 4
+    sharpness: 1.0            # 0 .. 8
+    autofocus: continuous     # continuous | manual (Camera Module 3 only)
+    lens_position: 1.0        # dioptres when autofocus is manual: 0 = infinity, 4 = 25 cm
+
+capture:
+  interval: 0.5               # seconds between analysed frames
+  jpeg_quality: 88
+  photo_interval: 5           # during a visit, save a photo at most this often...
+  max_photos_per_visit: 30    # ...and at most this many (extra photos when more birds arrive)
+  visit_gap: 20               # a visit ends after this many seconds without a detection
+  motion:
+    enabled: true             # only run the detector when the picture changes
+    pixel_threshold: 25       # 0-255 brightness change that counts as "changed"
+    area_threshold: 0.003     # fraction of the picture that must change
+    idle_detect_seconds: 30   # still run the detector this often (birds sitting still)
+
+detection:
+  model: yolov8n              # file /var/lib/pirdfy/models/<model>.onnx
+  confidence: 0.45
+  iou: 0.5
+  classes: [bird]             # any of the 80 COCO classes, e.g. [bird, cat]
+  min_box_area: 0.0005        # ignore tiny boxes (fraction of the picture)
+  threads: 2                  # CPU threads for the detector (Pi 5 has 4 cores)
+
+video:
+  enabled: true
+  clip_seconds: 20            # minimum clip length once a visit starts
+  max_clip_seconds: 60        # keep recording while the bird stays, up to this
+  cooldown: 10                # seconds between clips
+  bitrate: 6000000            # bits per second (H.264, MP4)
+
+storage:
+  photo_retention_days: 30    # 0 = keep forever. Favourites are never deleted.
+  video_retention_days: 14
+  max_storage_gb: 0           # 0 = no cap; otherwise oldest visits are removed first
+  min_free_gb: 2.0            # keep this much free; recording pauses below half of it
+
+notifications:                # sent when a visit starts; uses Apprise
+  enabled: false
+  urls: []                    # e.g. ["ntfy://ntfy.sh/my-feeder", "tgram://bot_token/chat_id"]
+  cooldown: 300
+  attach_image: true
+  title: Bird at the feeder
+  body: "{count} {label}(s) on {camera} at {time} ({confidence:.0%})"
+
+web:
+  host: 0.0.0.0
+  port: 8080
+  tls_cert: null              # paths to a certificate and key to serve HTTPS directly
+  tls_key: null
+  session_days: 30            # how long a sign-in lasts
+  trusted_proxies: []         # e.g. ["127.0.0.1"] when behind Caddy or nginx
+
+updates:
+  channel: stable             # stable = tagged releases, edge = latest main branch
+  check: true                 # look for updates on GitHub (needs internet)
+
+log_level: INFO
