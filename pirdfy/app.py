@@ -8,7 +8,7 @@ from collections.abc import Callable
 
 from .auth import AuthStore
 from .camera import CameraBackend, make_backend
-from .config import CameraSettings, ConfigStore, Settings
+from .config import CameraSettings, ConfigStore, Settings, VideoSettings
 from .db import Database
 from .detector import Detector
 from .events import EventBus
@@ -81,8 +81,21 @@ class Pirdfy:
         self.media.settings = new.storage
         self.updater.channel = new.updates.channel
         self._sync_workers(new)
+        if self._video_restart_needed(old.video, new.video):
+            for w in self.workers.values():
+                w.restart()
         if new.storage != old.storage:
             threading.Thread(target=self.media.housekeeping, daemon=True).start()
+
+    @staticmethod
+    def _video_restart_needed(old: VideoSettings, new: VideoSettings) -> bool:
+        def eff(v: VideoSettings) -> int:
+            return v.preroll_seconds if v.enabled else 0
+
+        if eff(old) != eff(new):
+            return True
+        # Bitrate and threads only matter for the always-on encoder.
+        return bool(eff(new)) and any(getattr(old, f) != getattr(new, f) for f in VideoSettings.RESTART_FIELDS)
 
     def _sync_workers(self, settings: Settings) -> None:
         wanted = {c.id: c for c in settings.cameras if c.enabled}
@@ -106,6 +119,9 @@ class Pirdfy:
         for w in self.workers.values():
             if w.error:
                 out.append({"code": "camera", "message": f"{w.cam.name}: {w.error}"})
+        for w in self.workers.values():
+            if w.backend is not None and w.backend.preroll_error:
+                out.append({"code": "preroll", "message": f"{w.cam.name}: {w.backend.preroll_error}"})
         if self.media.low_space:
             out.append({"code": "low_space", "message": "Disk almost full: recording paused"})
         if not self.auth.has_password:

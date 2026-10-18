@@ -51,6 +51,10 @@ video:
   max_clip_seconds: 60        # keep recording while the bird stays, up to this
   cooldown: 10                # seconds between clips
   bitrate: 6000000            # bits per second (H.264, MP4)
+  preroll_seconds: 0          # include this many seconds from BEFORE the detection (0-10).
+                              # Keeps the encoder running all day: costs CPU and heat on the
+                              # Pi 5 (software H.264). Measure first with: sudo pirdfy bench
+  preroll_threads: 2          # CPU threads for that always-on encoder
 
 storage:
   photo_retention_days: 30    # 0 = keep forever. Favourites are never deleted.

@@ -36,7 +36,8 @@ class Visit:
 @dataclass
 class Clip:
     path: str
-    started_at: float
+    opened_at: float      # when the file was opened
+    started_at: float     # first moment in the video (earlier when pre-roll is on)
     visit_id: int | None
 
 
@@ -113,6 +114,10 @@ class CameraWorker:
             except Exception as e:
                 log.warning("Camera %d: could not apply controls: %s", cam.id, e)
 
+    def restart(self) -> None:
+        """Reopen the camera (e.g. after pre-roll settings changed)."""
+        self._restart.set()
+
     def request_snapshot(self) -> None:
         self._snapshot_requested.set()
 
@@ -130,6 +135,8 @@ class CameraWorker:
             "visit": {"id": self.visit.id, "started_at": self.visit.started_at,
                       "count": self.visit.max_count} if self.visit else None,
             "recording": self.clip is not None,
+            "preroll": self.backend.preroll_active if self.backend else 0,
+            "preroll_error": self.backend.preroll_error if self.backend else None,
             "detections": [d.__dict__ for d in self.last_detections],
         }
 
@@ -156,6 +163,8 @@ class CameraWorker:
 
     def _open(self) -> None:
         self.backend = self.backend_factory(self.cam)
+        vs = self.store.settings.video
+        self.backend.configure_video(vs.preroll_seconds if vs.enabled else 0, vs.bitrate, vs.preroll_threads)
         self.backend.open()
         self.gate.reset()
         self.error = None
@@ -291,7 +300,8 @@ class CameraWorker:
         except Exception as e:
             log.error("Camera %d: could not start recording: %s", self.cam.id, e)
             return
-        self.clip = Clip(path=self.media.rel(path), started_at=now,
+        preroll = self.backend.preroll_active
+        self.clip = Clip(path=self.media.rel(path), opened_at=now, started_at=now - preroll,
                          visit_id=self.visit.id if self.visit else None)
         self.bus.publish("recording", {"camera_id": self.cam.id, "active": True})
 
@@ -299,8 +309,11 @@ class CameraWorker:
         if self.clip is None:
             return
         vs = self.store.settings.video
-        elapsed = now - self.clip.started_at
-        quiet = self.visit is None or now - self.visit.last_seen > 3
+        elapsed = now - self.clip.opened_at
+        # With pre-roll the file lags real time by the buffer length, so wait that much
+        # longer after the bird leaves or its departure is cut off.
+        lag = self.backend.preroll_active if self.backend else 0
+        quiet = self.visit is None or now - self.visit.last_seen > 3 + lag
         if elapsed >= vs.max_clip_seconds or (elapsed >= vs.clip_seconds and quiet) or not vs.enabled:
             self._stop_clip(now)
 
@@ -320,7 +333,7 @@ class CameraWorker:
             size = 0
         if size:
             self.db.add_video(visit_id=clip.visit_id, camera_id=self.cam.id, started_at=clip.started_at,
-                              duration=round(now - clip.started_at, 1), path=clip.path, size_bytes=size)
+                              duration=round(now - clip.opened_at, 1), path=clip.path, size_bytes=size)
         else:
             log.warning("Camera %d: recording %s is empty", self.cam.id, clip.path)
         self.bus.publish("recording", {"camera_id": self.cam.id, "active": False})

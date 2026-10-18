@@ -29,6 +29,9 @@ function renderCam(cam) {
   if (cam.visit) chips.push(h("span", { class: "chip present" },
     plural(cam.visit.count, cam.detections?.[0]?.label || "bird") + " here"));
   if (cam.recording) chips.push(h("span", { class: "chip rec" }, "Recording"));
+  else if (cam.preroll) chips.push(h("span", { class: "chip", title: "Video is buffered so clips include the arrival" },
+    `${cam.preroll} s pre-roll`));
+  if (cam.preroll_error) chips.push(h("span", { class: "chip off", title: cam.preroll_error }, "Pre-roll unavailable"));
   c.chips.replaceChildren(...chips);
   c.pauseBtn.textContent = cam.paused ? "Resume detection" : "Pause detection";
   if (cam.error) { c.empty.hidden = false; c.empty.textContent = cam.error; }
@@ -70,7 +73,7 @@ function renderHealth(s) {
   const sys = s.system, rows = [];
   const add = (k, v, bad = false) => rows.push(h("dt", {}, k), h("dd", { class: bad ? "bad" : null }, v));
   if (sys.temperature != null) add("Temperature", `${sys.temperature.toFixed(0)} °C`, sys.temperature >= 80);
-  add("CPU", `${Math.round(sys.cpu_percent)} %`);
+  add("CPU", `${Math.round(sys.cpu_percent)} % (Pirdfy ${sys.process_cpu ?? "–"} % of a core)`);
   add("Memory", `${Math.round(sys.memory_percent)} % (app ${sys.process_mb} MB)`);
   add("Free space", `${s.disk.free_gb} GB`, s.disk.low_space);
   add("Media stored", `${s.disk.media_gb} GB`);

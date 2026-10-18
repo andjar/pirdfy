@@ -32,6 +32,7 @@ class FakeBackend(CameraBackend):
 
     def open(self) -> None:
         self.opened = True
+        self.preroll_active = self.preroll_requested
 
     def close(self) -> None:
         self.opened = False

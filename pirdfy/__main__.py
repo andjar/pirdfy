@@ -83,6 +83,12 @@ def cmd_check_config(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["bench"]:
+        from .bench import main as bench
+
+        setup_logging("WARNING")
+        return bench(argv[1:])
     parser = argparse.ArgumentParser(prog="pirdfy", description="Bird feeder camera detector")
     sub = parser.add_subparsers(dest="cmd")
     serve = sub.add_parser("serve", help="run the service (default)")
@@ -92,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     pw.add_argument("--stdin", action="store_true", help="read the password from stdin")
     sub.add_parser("check-config", help="validate the configuration file")
     sub.add_parser("version")
+    sub.add_parser("bench", help="measure CPU/temperature cost of pre-roll (stop the service first)")
     get = sub.add_parser("get", help="print a config value, e.g. web.port")
     get.add_argument("key")
     args = parser.parse_args(argv)
