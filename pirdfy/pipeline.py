@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .camera import CameraBackend, make_backend
+from .camera import CameraBackend, explain_error, make_backend
 from .config import CameraSettings, ConfigStore
 from .db import Database
 from .detector import Detection, Detector
@@ -152,8 +152,11 @@ class CameraWorker:
                     self.step()
                     self._stop.wait(max(0.0, self.store.settings.capture.interval - (time.monotonic() - t0)))
             except Exception as e:
-                self.error = str(e) or type(e).__name__
-                log.error("Camera %d failed: %s (retrying in %.0fs)", self.cam.id, self.error, backoff)
+                message = explain_error(e)
+                if message != self.error:  # full traceback once per distinct problem, not every retry
+                    log.error("Camera %d failed: %s", self.cam.id, message, exc_info=e)
+                self.error = message
+                log.warning("Camera %d: retrying in %.0f s", self.cam.id, backoff)
                 self.bus.publish("camera", {"id": self.cam.id, "error": self.error})
                 self._stop.wait(backoff)
                 backoff = min(backoff * 2, 60)
