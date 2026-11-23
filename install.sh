@@ -170,6 +170,8 @@ create_user() {
     useradd --system --home-dir "$DATA" --no-create-home --shell /usr/sbin/nologin "$SVC_USER"
     ok "Created system user $SVC_USER"
   fi
+  # v1 used /opt/pirdfy as the home directory.
+  if [[ $(getent passwd "$SVC_USER" | cut -d: -f6) != "$DATA" ]]; then usermod -d "$DATA" "$SVC_USER"; fi
   local g
   for g in video render; do
     if getent group "$g" >/dev/null; then usermod -aG "$g" "$SVC_USER"; fi
@@ -193,8 +195,17 @@ EOF
 }
 
 # ---------------------------------------------------------------- legacy v1
+# A v1 install can be untouched, copied without .git, or already `git pull`ed by the
+# v1 updater (new code on disk, but v1 data/, logs/, venv and service still there).
+# All of them are moved aside as a whole, never cleaned in place.
+is_v1() {
+  if [[ -f $APP/src/main.py ]] && ! grep -q PIRDFY_V1_SHIM "$APP/src/main.py"; then return 0; fi
+  if grep -qs 'src/main.py' /etc/systemd/system/pirdfy.service; then return 0; fi
+  [[ -d $APP/data || -d $APP/logs ]]
+}
+
 migrate_v1() {
-  [[ -f $APP/src/main.py ]] || return 0
+  is_v1 || return 0
   step "Moving the old Pirdfy (v1) out of the way"
   systemctl disable --now "$UNIT" 2>/dev/null || true
   local backup
@@ -231,7 +242,6 @@ fetch_code() {
   fi
   local target; target=$(resolve_ref)
   git -C "$APP" -c advice.detachedHead=false checkout --quiet --force "$target"
-  git -C "$APP" clean -fdq -e venv -e venv.prev
   chown -R root:root "$APP"
   chmod -R go-w "$APP"
   ok "Version $(cat "$APP/VERSION") ($(git -C "$APP" describe --tags --always))"
@@ -484,6 +494,17 @@ do_model() { need_root; CMD=model; rm -f "$DATA/models/$MODEL.onnx.bak"
   fetch_model || { mv "$DATA/models/$MODEL.onnx.bak" "$DATA/models/$MODEL.onnx" 2>/dev/null; exit 1; }
   rm -f "$DATA/models/$MODEL.onnx.bak"; systemctl restart "$UNIT"; }
 
+camera_holders() { # "pid command" for every process with a camera device open
+  local p fd
+  for p in /proc/[0-9]*; do
+    for fd in "$p"/fd/*; do
+      case "$(readlink "$fd" 2>/dev/null)" in
+        /dev/media*|/dev/video*) echo "${p#/proc/} $(tr '\0' ' ' <"$p/cmdline" | cut -c1-120)"; break ;;
+      esac
+    done
+  done
+}
+
 do_doctor() {
   local bad=0
   check() { if eval "$2" &>/dev/null; then ok "$1"; else warn "$1: $3"; bad=1; fi; }
@@ -498,6 +519,16 @@ do_doctor() {
   if command -v rpicam-hello &>/dev/null; then
     check "Camera connected" "rpicam-hello --list-cameras 2>&1 | grep -q '^[0-9] :'" "check the ribbon cable, then reboot"
   fi
+  local holders
+  holders=$(camera_holders | grep -v "pirdfy serve" || true)
+  if [[ -n $holders ]]; then
+    warn "Other programs are using the camera (stop them, Pirdfy needs it alone):"
+    while read -r line; do info "  pid $line"; done <<<"$holders"
+    bad=1
+  fi
+  local camerr
+  camerr=$(journalctl -u "$UNIT" -n 300 --no-pager 2>/dev/null | grep -E "Camera [0-9]+ failed" | tail -n1 || true)
+  [[ -n $camerr ]] && info "Last camera error: ${camerr#*: }"
   local health; health=$(curl -fsS -m 5 "http://127.0.0.1:$(web_port)/healthz" 2>/dev/null || true)
   [[ -n $health ]] && info "Health: $health"
   if command -v vcgencmd &>/dev/null; then

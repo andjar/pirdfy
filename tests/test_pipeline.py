@@ -233,3 +233,18 @@ def test_mock_backend_writes_buffered_frames(tmp_path):
     b.stop_clip()
     n = int(cv2.VideoCapture(str(path)).get(cv2.CAP_PROP_FRAME_COUNT))
     assert n == 9  # 6 buffered (all within 2 s) + 3 live
+
+
+def test_explain_error_reveals_picamera2_cause():
+    from pirdfy.camera import explain_error
+
+    try:
+        try:
+            raise RuntimeError("Failed to acquire camera: Device or resource busy")
+        except RuntimeError as inner:
+            raise RuntimeError("Camera __init__ sequence did not complete.") from inner
+    except RuntimeError as e:
+        msg = explain_error(e)
+    assert msg.startswith("Camera __init__ sequence did not complete: Failed to acquire camera: Device or resource busy")
+    assert "Another program is using the camera" in msg
+    assert explain_error(ValueError("plain")) == "plain"

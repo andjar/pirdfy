@@ -40,6 +40,39 @@ class CameraError(RuntimeError):
     pass
 
 
+_HINTS = (
+    (("busy",), "Another program is using the camera (an old Pirdfy, an rpicam/libcamera app, or "
+                "PipeWire/WirePlumber on Ubuntu desktop). 'sudo pirdfy doctor' shows which."),
+    (("permission denied", "operation not permitted"),
+     "The pirdfy user may not open the camera devices. Check that it is in the 'video' group and "
+     "that /dev/dma_heap/* is readable by that group."),
+    (("ipa", "pipeline handler"),
+     "libcamera lacks Raspberry Pi 5 support. Use Raspberry Pi OS, or the Raspberry Pi builds of "
+     "libcamera and picamera2."),
+)
+
+
+def explain_error(exc: BaseException) -> str:
+    """One readable line from an exception and everything chained under it.
+
+    picamera2 hides the real reason behind "Camera __init__ sequence did not
+    complete" (it is the __cause__), so walk the chain and add a hint.
+    """
+    parts: list[str] = []
+    e: BaseException | None = exc
+    while e is not None and len(parts) < 5:
+        msg = (str(e) or type(e).__name__).strip().rstrip(".")
+        if msg and msg not in parts:
+            parts.append(msg)
+        e = e.__cause__ or (None if e.__suppress_context__ else e.__context__)
+    text = ": ".join(parts)
+    low = text.lower()
+    for needles, hint in _HINTS:
+        if any(n in low for n in needles):
+            return f"{text}. {hint}"
+    return text
+
+
 def lores_size(main: tuple[int, int]) -> tuple[int, int]:
     w, h = main
     lh = round(LORES_WIDTH * h / w / 2) * 2
@@ -136,7 +169,10 @@ class Picamera2Backend(CameraBackend):
         if s.id >= len(infos):
             raise CameraError(f"Camera {s.id} not detected (found {len(infos)}). Check the ribbon cable.")
         self.model = infos[s.id].get("Model", "unknown")
-        cam = Picamera2(camera_num=s.id)
+        try:
+            cam = Picamera2(camera_num=s.id)
+        except Exception as e:
+            raise CameraError(explain_error(e)) from e
         try:
             lores = lores_size(s.resolution)
             config = cam.create_video_configuration(
